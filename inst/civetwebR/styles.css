@@ -1,44 +1,66 @@
 body {
-    font-family: system-ui, sans-serif;
+    font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
     margin: 40px;
-    background: #f7f7f7;
-    color: #222;
+    background: #f4f6f9;
+    color: #2c2c2c;
 }
 
+/* ---- Header ---- */
 h1 {
-    margin-bottom: 20px;
+    margin-bottom: 16px;
+    font-weight: 600;
+    color: #276DC3; /* R blue */
 }
 
+/* ---- Navigation ---- */
 .nav {
-    margin-bottom: 20px;
+    margin-bottom: 16px;
 }
 
+/* Parent link */
 .parent {
     display: inline-block;
+    padding: 6px 12px;
     margin-bottom: 10px;
-    font-weight: bold;
+    font-weight: 600;
     text-decoration: none;
-    color: #444;
+    color: #4a4a4a;
+    background: #e3e6ea;
+    border-radius: 8px;
+    transition: all 0.15s ease;
 }
 
 .parent:hover {
-    text-decoration: underline;
+    background: #d5d9df;
+    color: #1f1f1f;
 }
 
+/* ---- File list ---- */
 .files a {
     display: block;
-    padding: 6px 10px;
-    margin: 2px 0;
-    background: white;
-    border-radius: 6px;
+    padding: 8px 12px;
+    margin: 3px 0;
+    background: #ffffff;
+    border-radius: 8px;
     text-decoration: none;
-    color: #007acc;
+    color: #276DC3; /* R blue */
+    border: 1px solid #e2e5e9;
+    transition: all 0.15s ease;
 }
 
+/* Hover effect (R-like highlight) */
 .files a:hover {
-    background: #e6f2ff;
+    background: #eaf2ff;
+    border-color: #4F8DD3;
 }
 
+/* ---- Links (global) ---- */
 a {
-    transition: background 0.15s;
+    transition: all 0.15s ease;
+}
+
+/* ---- Optional: subtle emphasis on folders ---- */
+.files a[href$="/"] {
+    font-weight: 600;
+    color: #1f5fb8;
 }

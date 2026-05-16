@@ -65,10 +65,33 @@ static_files <- function(
   # ---- template + assets selection ----
   use_internal_assets <- list_dirs && is.null(template)
 
+  # Template resolution:
+  # 1) explicit template path
+  # 2) installed package file via system.file
+  # 3) devtools::load_all fallback to ./inst/civetwebR/dir_listing.html
   tpl_path <- if (!is.null(template)) {
     template
   } else {
-    system.file("civetwebR", "dir_listing.html", package = utils::packageName())
+    # Prefer the real package name if available; fallback to "civetwebR"
+    pkg <- utils::packageName()
+    if (is.null(pkg) || !nzchar(pkg)) {
+      pkg <- "civetwebR"
+    }
+
+    p <- system.file("civetwebR", "dir_listing.html", package = pkg)
+
+    if (!nzchar(p)) {
+      # dev fallback when load_all() is used
+      dev_p <- file.path(
+        normalizePath(".", winslash = "/", mustWork = FALSE),
+        "inst",
+        "civetwebR",
+        "dir_listing.html"
+      )
+      if (file.exists(dev_p)) dev_p else ""
+    } else {
+      p
+    }
   }
 
   asset_prefix <- if (use_internal_assets) "/civetwebR/" else prefix
@@ -83,13 +106,10 @@ static_files <- function(
     }
 
     pfx_len <- nchar(prefix)
-
-    # exact match of prefix
     if (nchar(path) == pfx_len) {
       return(TRUE)
     }
 
-    # boundary: next char must be "/"
     substr(path, pfx_len + 1L, pfx_len + 1L) == "/"
   }
 
@@ -98,7 +118,7 @@ static_files <- function(
     tryCatch(utils::URLdecode(x), error = function(e) x)
   }
 
-  # ---- helper: HTML escape for directory listing ----
+  # ---- helper: HTML escape (correct) ----
   .html_escape <- function(x) {
     x <- gsub("&", "&amp;", x, fixed = TRUE)
     x <- gsub("<", "&lt;", x, fixed = TRUE)
@@ -139,24 +159,19 @@ static_files <- function(
     # decode URL-encoded characters (e.g. %20)
     rel <- .safe_url_decode(rel)
 
-    # guard against oddities early (optional but safe)
     # normalize possible Windows separators
     rel <- gsub("\\\\", "/", rel)
 
     # build raw filesystem path first
     file <- file.path(root, rel)
 
-    # normalize if possible:
-    # - mustWork=TRUE gives canonical path for existing targets
-    # - fallback keeps something comparable for traversal checks
+    # normalize if possible
     file_norm <- tryCatch(
       normalizePath(file, winslash = "/", mustWork = TRUE),
       error = function(e) normalizePath(file, winslash = "/", mustWork = FALSE)
     )
 
-    # ✅ critical fix:
-    # allow the root directory itself (file_norm == root),
-    # and allow anything underneath root (startsWith(file_norm, root_slash))
+    # allow the root directory itself and anything underneath root
     if (!(identical(file_norm, root) || startsWith(file_norm, root_slash))) {
       return(list(status = 403L, headers = list(), body = "Forbidden"))
     }
@@ -171,14 +186,13 @@ static_files <- function(
         }
       }
 
-      # directory listing (optional)
+      # directory listing
       if (isTRUE(list_dirs)) {
         files <- list.files(file_norm, all.files = FALSE, no.. = TRUE)
         is_dir <- dir.exists(file.path(file_norm, files))
         names <- ifelse(is_dir, paste0(files, "/"), files)
 
-        # Build links using URL-ish paths (always forward slashes)
-        base <- sub("/+$", "", path) # remove trailing slashes
+        base <- sub("/+$", "", path)
         base <- if (base == "") "/" else paste0(base, "/")
         hrefs <- paste0(base, names)
 
@@ -192,11 +206,20 @@ static_files <- function(
 
         files_html <- paste(links, collapse = "\n<br>\n")
 
-        # read template
-        if (nzchar(tpl_path) && file.exists(tpl_path)) {
-          template_html <- readChar(tpl_path, file.info(tpl_path)$size)
+        # read template safely
+        template_html <- if (nzchar(tpl_path) && file.exists(tpl_path)) {
+          tryCatch(
+            {
+              sz <- file.info(tpl_path)$size
+              if (is.na(sz)) {
+                stop("template size is NA")
+              }
+              readChar(tpl_path, sz)
+            },
+            error = function(e) "<h1>{{path}}</h1>\n{{files}}"
+          )
         } else {
-          template_html <- "<h1>{{path}}</h1>\n{{files}}"
+          "<h1>{{path}}</h1>\n{{files}}"
         }
 
         body <- template_html
@@ -242,6 +265,10 @@ static_files <- function(
 
 .guess_mime <- function(path) {
   ext <- tolower(tools::file_ext(path))
+
+  if (ext == "") {
+    return("text/plain")
+  }
 
   switch(
     ext,
