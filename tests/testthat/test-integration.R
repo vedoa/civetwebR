@@ -1,27 +1,38 @@
 # ------------------------------------------------------------------
-# Fixture: start server (no loop here)
+# Helper: wait for server (FIXED)
 # ------------------------------------------------------------------
-local_server <- function(port = 8080L) {
-  clear_handlers()
+wait_for_server <- function(port, p = NULL, timeout = 5) {
+  start <- Sys.time()
 
-  if (.is_running()) {
-    try(stop_server(), silent = TRUE)
-    Sys.sleep(0.1)
+  repeat {
+    if (!is.null(p) && !p$is_alive()) {
+      stop("Server crashed:\n", p$read_error())
+    }
+
+    ok <- tryCatch(
+      {
+        con <- socketConnection(
+          host = "127.0.0.1",
+          port = port,
+          open = "r+",
+          blocking = TRUE
+        )
+        close(con)
+        TRUE
+      },
+      error = function(e) FALSE
+    )
+
+    if (ok) {
+      return(TRUE)
+    }
+
+    if (as.numeric(Sys.time() - start, units = "secs") > timeout) {
+      stop("Server did not start")
+    }
+
+    Sys.sleep(0.05)
   }
-
-  start_server(port)
-
-  on.exit(
-    {
-      if (.is_running()) {
-        try(stop_server(), silent = TRUE)
-        Sys.sleep(0.1)
-      }
-    },
-    add = TRUE
-  )
-
-  invisible(port)
 }
 
 # ------------------------------------------------------------------
@@ -121,7 +132,7 @@ test_that("group applies prefix correctly", {
 })
 
 # ------------------------------------------------------------------
-# Integration tests: STATIC (real HTTP)
+# Integration tests: STATIC
 # ------------------------------------------------------------------
 test_that("integration: static serving works", {
   skip_on_cran()
@@ -142,7 +153,7 @@ test_that("integration: static serving works", {
 
   port <- sample(10000:20000, 1)
   base <- sprintf("http://127.0.0.1:%d", port)
-  pkg_path <- normalizePath(".")
+  pkg_path <- normalizePath(testthat::test_path("../.."), mustWork = TRUE)
 
   p <- callr::r_bg(
     function(pkg_path, tmp, port) {
@@ -171,31 +182,7 @@ test_that("integration: static serving works", {
     add = TRUE
   )
 
-  wait_for_server <- function(url, p) {
-    for (i in 1:40) {
-      if (!p$is_alive()) {
-        stop("Server crashed:\n", p$read_error())
-      }
-
-      ok <- tryCatch(
-        {
-          con <- url(url)
-          close(con)
-          TRUE
-        },
-        error = function(e) FALSE
-      )
-
-      if (ok) {
-        return(TRUE)
-      }
-
-      Sys.sleep(0.1)
-    }
-    stop("Server did not start")
-  }
-
-  wait_for_server(base, p)
+  wait_for_server(port, p)
 
   GET <- function(path) {
     con <- url(paste0(base, path))
@@ -208,9 +195,8 @@ test_that("integration: static serving works", {
   expect_match(GET("/"), "INDEX", fixed = TRUE)
 })
 
-
 # ------------------------------------------------------------------
-# Integration tests: ROUTING (real HTTP, no static)
+# Integration tests: ROUTING
 # ------------------------------------------------------------------
 test_that("integration: routing works", {
   skip_on_cran()
@@ -219,7 +205,7 @@ test_that("integration: routing works", {
 
   port <- sample(10000:20000, 1)
   base <- sprintf("http://127.0.0.1:%d", port)
-  pkg_path <- normalizePath(".")
+  pkg_path <- normalizePath(testthat::test_path("../.."), mustWork = TRUE)
 
   p <- callr::r_bg(
     function(pkg_path, port) {
@@ -234,8 +220,7 @@ test_that("integration: routing works", {
       serve(
         port = port,
         host = "127.0.0.1",
-        quiet = TRUE,
-        static = NULL
+        quiet = TRUE
       )
     },
     args = list(pkg_path, port)
@@ -248,31 +233,7 @@ test_that("integration: routing works", {
     add = TRUE
   )
 
-  wait_for_server <- function(url, p) {
-    for (i in 1:40) {
-      if (!p$is_alive()) {
-        stop("Server crashed:\n", p$read_error())
-      }
-
-      ok <- tryCatch(
-        {
-          con <- url(url)
-          close(con)
-          TRUE
-        },
-        error = function(e) FALSE
-      )
-
-      if (ok) {
-        return(TRUE)
-      }
-
-      Sys.sleep(0.1)
-    }
-    stop("Server did not start")
-  }
-
-  wait_for_server(base, p)
+  wait_for_server(port, p)
 
   GET <- function(path) {
     con <- url(paste0(base, path))
@@ -284,9 +245,8 @@ test_that("integration: routing works", {
   expect_match(GET("/api/world"), "WORLD", fixed = TRUE)
 })
 
-
 # ------------------------------------------------------------------
-# Integration tests: STATIC overrides ROUTING
+# Integration tests: STATIC overrides routing
 # ------------------------------------------------------------------
 test_that("integration: static overrides routing when overlapping", {
   skip_on_cran()
@@ -298,21 +258,18 @@ test_that("integration: static overrides routing when overlapping", {
   public <- file.path(tmp, "public")
   dir.create(public, showWarnings = FALSE)
 
-  # static file that conflicts with route
   dir.create(file.path(public, "api"), showWarnings = FALSE)
   writeLines("STATIC", file.path(public, "api", "hello"))
 
   port <- sample(10000:20000, 1)
   base <- sprintf("http://127.0.0.1:%d", port)
-  pkg_path <- normalizePath(".")
+  pkg_path <- normalizePath(testthat::test_path("../.."), mustWork = TRUE)
 
   p <- callr::r_bg(
     function(pkg_path, tmp, port) {
       pkgload::load_all(pkg_path)
 
-      handle("GET", "/api/hello", function(req) {
-        "ROUTE"
-      })
+      handle("GET", "/api/hello", function(req) "ROUTE")
 
       serve(
         port = port,
@@ -333,31 +290,7 @@ test_that("integration: static overrides routing when overlapping", {
     add = TRUE
   )
 
-  wait_for_server <- function(url, p) {
-    for (i in 1:40) {
-      if (!p$is_alive()) {
-        stop("Server crashed:\n", p$read_error())
-      }
-
-      ok <- tryCatch(
-        {
-          con <- url(url)
-          close(con)
-          TRUE
-        },
-        error = function(e) FALSE
-      )
-
-      if (ok) {
-        return(TRUE)
-      }
-
-      Sys.sleep(0.1)
-    }
-    stop("Server did not start")
-  }
-
-  wait_for_server(base, p)
+  wait_for_server(port, p)
 
   GET <- function(path) {
     con <- url(paste0(base, path))

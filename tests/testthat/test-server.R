@@ -1,9 +1,3 @@
-teardown({
-  if (!is.null(.state$server_xptr)) {
-    try(stop_server(), silent = TRUE)
-  }
-})
-
 test_that("server starts and updates state", {
   if (!is.null(.state$server_xptr)) stop_server()
 

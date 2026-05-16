@@ -10,7 +10,7 @@ group <- function(prefix, expr) {
   .state$prefix_stack <- c(.state$prefix_stack, prefix)
   on.exit(
     {
-      .state$prefix_stack <- head(.state$prefix_stack, -1L)
+      .state$prefix_stack <- utils::head(.state$prefix_stack, -1L)
     },
     add = TRUE
   )
@@ -21,6 +21,14 @@ group <- function(prefix, expr) {
 
 #' Register an HTTP handler
 #'
+#' Registers a function for a given HTTP method and path. The path is
+#' normalized and combined with the current route prefix.
+#'
+#' @param method Character string. HTTP method (e.g. "GET", "POST").
+#' @param path Character string. Route path starting with "/".
+#' @param fun Function. Handler of form function(req).
+#'
+#' @return TRUE (invisibly) on success.
 #' @export
 handle <- function(method, path, fun) {
   if (!is.character(method) || length(method) != 1L || is.na(method)) {
@@ -54,6 +62,10 @@ handle <- function(method, path, fun) {
 #' Dispatch an HTTP request
 #'
 #' Internal: called by driver loop
+#'
+#' @param method HTTP method.
+#' @param path Request path.
+#' @param req Request object.
 .dispatch_request <- function(method, path, req = NULL) {
   fun <- .get_handler(method, path)
 
@@ -87,7 +99,6 @@ handle <- function(method, path, fun) {
   )
 }
 
-
 .parse_query <- function(q) {
   if (is.null(q) || q == "") {
     return(list())
@@ -105,11 +116,11 @@ handle <- function(method, path, fun) {
     out[[i]] <- val
   }
 
-  setNames(out, nms)
+  stats::setNames(out, nms)
 }
 
-
 #' Normalize an HTTP response
+#' @param x Object to normalize.
 .normalize_response <- function(x) {
   if (is.character(x) && length(x) == 1L) {
     return(list(
@@ -143,6 +154,9 @@ handle <- function(method, path, fun) {
 }
 
 #' Lookup an HTTP handler
+#'
+#' @param method HTTP method.
+#' @param path Request path.
 .get_handler <- function(method, path) {
   env <- .get_handlers_env()
 

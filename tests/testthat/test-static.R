@@ -145,7 +145,7 @@ test_that("integration: static end-to-end", {
 
   port <- sample(10000:20000, 1)
   base <- sprintf("http://127.0.0.1:%d", port)
-  pkg_path <- normalizePath(".")
+  pkg_path <- normalizePath(testthat::test_path("../.."), mustWork = TRUE)
 
   p <- callr::r_bg(
     function(pkg_path, tmp, port) {

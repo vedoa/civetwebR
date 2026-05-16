@@ -1,11 +1,3 @@
-teardown({
-  clear_handlers()
-  if (!is.null(.state$server_xptr)) {
-    try(stop_server(), silent = TRUE)
-  }
-})
-
-
 test_that("handler registers for method + path", {
   clear_handlers()
 

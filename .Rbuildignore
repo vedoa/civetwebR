@@ -4,3 +4,6 @@
 ^\.devcontainer/
 ^\.vscode/
 ^README\.md$
+^LICENSE\.md$
+^src/.*\\.inl$
+^init\.R$

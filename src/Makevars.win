@@ -1,3 +1,2 @@
-PKG_CFLAGS = -std=gnu99
 PKG_CPPFLAGS = -DNO_SSL -DNO_CGI
 PKG_LIBS += -lws2_32
