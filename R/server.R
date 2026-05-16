@@ -1,23 +1,15 @@
 #' Start the CivetWeb server
 #'
 #' @param port Integer. Port to listen on.
+#' @param host String. Host to expose to.
 #' @return Invisibly returns TRUE.
 #' @export
-start_server <- function(port = 8080L) {
-  if (.is_running()) {
-    stop("Server is already running", call. = FALSE)
-  }
+start_server <- function(port = 8080L, host = "127.0.0.1") {
+  .validate_is_running()
+  .validate_port(port)
+  .validate_host(host)
 
-  if (!is.numeric(port) || length(port) != 1L || is.na(port)) {
-    stop("port must be a single number", call. = FALSE)
-  }
-
-  port <- as.integer(port)
-  if (port < 1L || port > 65535L) {
-    stop("port must be between 1 and 65535", call. = FALSE)
-  }
-
-  ptr <- .Call(civetweb_start_server, port, PACKAGE = "civetwebR")
+  ptr <- .Call(civetweb_start_server, port, host, PACKAGE = "civetwebR")
 
   if (is.null(ptr)) {
     stop("failed to start server", call. = FALSE)
@@ -34,13 +26,8 @@ start_server <- function(port = 8080L) {
 #' @return Invisibly returns TRUE.
 #' @export
 stop_server <- function() {
-  if (!.is_running()) {
-    stop("Server is not running", call. = FALSE)
-  }
-
-  if (.is_loop_running()) {
-    stop("Cannot stop server while loop is running", call. = FALSE)
-  }
+  .validate_is_not_running()
+  .validate_is_loop_running()
 
   .Call(civetweb_stop_server, .state$server_xptr, PACKAGE = "civetwebR")
 

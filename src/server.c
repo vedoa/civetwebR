@@ -403,20 +403,26 @@ SEXP civetweb_send_response(SEXP idS, SEXP res) {
 /* SERVER                                                        */
 /* ============================================================ */
 
-SEXP civetweb_start_server(SEXP portS) {
+SEXP civetweb_start_server(SEXP portS, SEXP hostS) {
   init_once();
 
   if (!Rf_isInteger(portS) || LENGTH(portS) < 1) {
     Rf_error("port must be an integer");
   }
 
-  int port = INTEGER(portS)[0];
+  if (!Rf_isString(hostS) || LENGTH(hostS) < 1) {
+    Rf_error("host must be character(1)");
+  }
 
-  char buf[16];
-  snprintf(buf, sizeof(buf), "%d", port);
+  int port = INTEGER(portS)[0];
+  const char *host = CHAR(STRING_ELT(hostS, 0));
+
+  /* build "host:port" */
+  char addr[64];
+  snprintf(addr, sizeof(addr), "%s:%d", host, port);
 
   const char *opts[] = {
-    "listening_ports", buf,
+    "listening_ports", addr,
     "num_threads", "1",
     NULL
   };

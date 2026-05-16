@@ -11,7 +11,7 @@ SEXP civetweb_next_request_timeout(SEXP timeout_ms);
 SEXP civetweb_send_response(SEXP id, SEXP res);
 
 static const R_CallMethodDef CallEntries[] = {
-    {"civetweb_start_server",        (DL_FUNC) &civetweb_start_server,        1},
+    {"civetweb_start_server",        (DL_FUNC) &civetweb_start_server,        2},
     {"civetweb_stop_server",         (DL_FUNC) &civetweb_stop_server,         1},
     {"civetweb_next_request_timeout",(DL_FUNC) &civetweb_next_request_timeout,1},
     {"civetweb_send_response",       (DL_FUNC) &civetweb_send_response,       2},
