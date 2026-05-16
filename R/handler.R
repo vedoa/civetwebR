@@ -54,17 +54,30 @@ handle <- function(method, path, fun) {
 #' Dispatch an HTTP request
 #'
 #' Internal: called by driver loop
-.dispatch_request <- function(method, path) {
+.dispatch_request <- function(method, path, req = NULL) {
   fun <- .get_handler(method, path)
 
   if (is.null(fun)) {
     return(list(status = 404L, headers = list(), body = "Not Found"))
   }
 
-  req <- list(
-    method = method,
-    path = path
-  )
+  if (is.null(req)) {
+    req <- list(method = method, path = path)
+  } else {
+    # ensure minimum fields are always present
+    req$method <- method
+    req$path <- path
+    if (is.null(req$query)) {
+      req$query <- ""
+    }
+    if (is.null(req$query_params)) {
+      req$query_params <- .parse_query(req$query)
+    }
+    if (is.null(req$headers)) {
+      req$headers <- character()
+    }
+    if (is.null(req$body)) req$body <- raw()
+  }
 
   tryCatch(
     .normalize_response(fun(req)),
@@ -73,6 +86,28 @@ handle <- function(method, path, fun) {
     }
   )
 }
+
+
+.parse_query <- function(q) {
+  if (is.null(q) || q == "") {
+    return(list())
+  }
+  parts <- strsplit(q, "&", fixed = TRUE)[[1]]
+  out <- vector("list", length(parts))
+  nms <- character(length(parts))
+
+  for (i in seq_along(parts)) {
+    p <- parts[[i]]
+    kv <- strsplit(p, "=", fixed = TRUE)[[1]]
+    key <- utils::URLdecode(kv[[1]])
+    val <- if (length(kv) >= 2L) utils::URLdecode(kv[[2]]) else ""
+    nms[[i]] <- key
+    out[[i]] <- val
+  }
+
+  setNames(out, nms)
+}
+
 
 #' Normalize an HTTP response
 .normalize_response <- function(x) {

@@ -41,12 +41,31 @@
   #define cw_cond_wait(c,m)   pthread_cond_wait((c),(m))
 #endif
 
+/* ---- limits ---- */
+#define CW_MAX_BODY (8u * 1024u * 1024u) /* 8 MiB */
+
+/* request header pair */
+typedef struct cw_hdr {
+  char *name;
+  char *value;
+} cw_hdr_t;
+
 typedef struct cw_request {
   int id;
   char *method;
   char *path;
+  char *query;               /* query_string (no leading '?') */
+
+  cw_hdr_t *headers;         /* copied request headers */
+  int num_headers;
+
+  unsigned char *req_body;   /* request body bytes */
+  size_t req_body_len;
+  int req_body_too_large;
+
   struct mg_connection *conn;
 
+  /* response */
   int status;
   char *content_type;
   unsigned char *body;
@@ -91,10 +110,25 @@ static char *dup_str(const char *s) {
 
 static void free_req(cw_request_t *r) {
   if (!r) return;
+
   free(r->method);
   free(r->path);
+  free(r->query);
+
+  if (r->headers) {
+    for (int i = 0; i < r->num_headers; i++) {
+      free(r->headers[i].name);
+      free(r->headers[i].value);
+    }
+    free(r->headers);
+  }
+
+  free(r->req_body);
+
+  /* response */
   free(r->content_type);
   free(r->body);
+
   cw_mutex_destroy(&r->lock);
 #ifndef _WIN32
   pthread_cond_destroy(&r->cv);
@@ -129,7 +163,6 @@ static void check_interrupt_cb(void *dummy) {
 }
 
 static int interrupt_pending(void) {
-  /* R_ToplevelExec returns FALSE if it longjmp'd (interrupt) */
   return (R_ToplevelExec(check_interrupt_cb, NULL) == FALSE);
 }
 
@@ -162,7 +195,6 @@ static int dequeue_timeout(cw_request_t **out, int timeout_ms) {
   while (q_head == NULL && g_running) {
     cw_mutex_unlock(&g_lock);
 
-    /* check user interrupt without longjmp out of our stack */
     if (interrupt_pending()) {
       *out = NULL;
       return -1;
@@ -294,6 +326,113 @@ static void apply_response_from_R(cw_request_t *r, SEXP res) {
   }
 }
 
+/* copy headers from mg_request_info */
+static void copy_headers(cw_request_t *r, const struct mg_request_info *req) {
+  r->headers = NULL;
+  r->num_headers = 0;
+
+  if (!req) return;
+  if (req->num_headers <= 0) return;
+
+  int n = req->num_headers;
+  if (n > 64) n = 64; /* civetweb defines array size 64 */
+
+  r->headers = (cw_hdr_t *)calloc((size_t)n, sizeof(cw_hdr_t));
+  if (!r->headers) Rf_error("OOM");
+
+  r->num_headers = n;
+  for (int i = 0; i < n; i++) {
+    const char *hn = req->http_headers[i].name;
+    const char *hv = req->http_headers[i].value;
+    r->headers[i].name = dup_str(hn ? hn : "");
+    r->headers[i].value = dup_str(hv ? hv : "");
+  }
+}
+
+/* read request body via mg_read (binary) */
+static void read_body(cw_request_t *r, struct mg_connection *conn, const struct mg_request_info *req) {
+  r->req_body = NULL;
+  r->req_body_len = 0;
+  r->req_body_too_large = 0;
+
+  if (!conn || !req) return;
+
+  long long cl = req->content_length; /* can be -1 */
+  if (cl == 0) return;
+
+  /* allocate up to max body, read & discard rest if larger */
+  size_t maxb = (size_t)CW_MAX_BODY;
+
+  unsigned char *buf = NULL;
+  size_t cap = 0;
+  size_t len = 0;
+
+  if (cl > 0) {
+    cap = (size_t)cl;
+    if (cap > maxb) {
+      cap = maxb;
+      r->req_body_too_large = 1;
+    }
+    buf = (unsigned char *)malloc(cap);
+    if (!buf && cap > 0) Rf_error("OOM");
+
+    /* read exactly cl bytes (or until mg_read stops) */
+    size_t remaining = (size_t)cl;
+    while (remaining > 0) {
+      unsigned char tmp[8192];
+      size_t want = remaining > sizeof(tmp) ? sizeof(tmp) : remaining;
+
+      int nread = mg_read(conn, tmp, want);
+      if (nread <= 0) break;
+
+      /* store up to cap, discard rest */
+      size_t take = (size_t)nread;
+      if (len < cap) {
+        size_t room = cap - len;
+        size_t put = take > room ? room : take;
+        memcpy(buf + len, tmp, put);
+        len += put;
+      } else {
+        r->req_body_too_large = 1;
+      }
+
+      remaining -= take;
+    }
+
+  } else {
+    /* cl == -1 (unknown): read until peer closes or no more data */
+    cap = maxb;
+    buf = (unsigned char *)malloc(cap);
+    if (!buf) Rf_error("OOM");
+
+    for (;;) {
+      unsigned char tmp[8192];
+      int nread = mg_read(conn, tmp, sizeof(tmp));
+      if (nread <= 0) break;
+
+      size_t take = (size_t)nread;
+      if (len < cap) {
+        size_t room = cap - len;
+        size_t put = take > room ? room : take;
+        memcpy(buf + len, tmp, put);
+        len += put;
+        if (put < take) r->req_body_too_large = 1;
+      } else {
+        r->req_body_too_large = 1;
+      }
+    }
+  }
+
+  if (len == 0) {
+    free(buf);
+    r->req_body = NULL;
+    r->req_body_len = 0;
+  } else {
+    r->req_body = buf;
+    r->req_body_len = len;
+  }
+}
+
 /* HTTP handler (NO R API) */
 static int handler(struct mg_connection *conn, void *cbdata) {
   (void)cbdata;
@@ -322,11 +461,18 @@ static int handler(struct mg_connection *conn, void *cbdata) {
 
   const char *m = (req && req->request_method) ? req->request_method : "GET";
   const char *p = (req && req->request_uri)    ? req->request_uri    : "/";
+  const char *q = (req && req->query_string)   ? req->query_string   : "";
 
   r->method = dup_str(m);
   r->path   = dup_str(p);
+  r->query  = dup_str(q);
+
   r->conn   = conn;
 
+  copy_headers(r, req);
+  read_body(r, conn, req);
+
+  /* response defaults */
   r->status = 500;
   r->content_type = dup_str("text/plain");
   r->body = NULL;
@@ -362,6 +508,16 @@ static int handler(struct mg_connection *conn, void *cbdata) {
 
 /* R API */
 
+static SEXP make_interrupt_sentinel(void) {
+  SEXP out = PROTECT(Rf_allocVector(VECSXP, 1));
+  SEXP nms = PROTECT(Rf_allocVector(STRSXP, 1));
+  SET_STRING_ELT(nms, 0, Rf_mkChar("interrupted"));
+  Rf_setAttrib(out, R_NamesSymbol, nms);
+  SET_VECTOR_ELT(out, 0, Rf_ScalarLogical(1));
+  UNPROTECT(2);
+  return out;
+}
+
 SEXP civetweb_next_request_timeout(SEXP timeout_ms) {
   init_once();
 
@@ -373,35 +529,55 @@ SEXP civetweb_next_request_timeout(SEXP timeout_ms) {
   cw_request_t *r = NULL;
   int rc = dequeue_timeout(&r, ms);
 
-  /* IMPORTANT: do NOT call R_CheckUserInterrupt() here (it can longjmp).
-     Instead, return a sentinel to R so R can stop cleanly. */
   if (rc == -1) {
-    SEXP out = PROTECT(Rf_allocVector(VECSXP, 1));
-    SEXP nms = PROTECT(Rf_allocVector(STRSXP, 1));
-    SET_STRING_ELT(nms, 0, Rf_mkChar("interrupted"));
-    Rf_setAttrib(out, R_NamesSymbol, nms);
-    SET_VECTOR_ELT(out, 0, Rf_ScalarLogical(1));
-    UNPROTECT(2);
-    return out;
+    return make_interrupt_sentinel();
   }
 
   if (rc == 0) {
     return R_NilValue;
   }
 
-  SEXP out = PROTECT(Rf_allocVector(VECSXP, 3));
-  SEXP nms = PROTECT(Rf_allocVector(STRSXP, 3));
+  /* Build req list: id, method, path, query, headers, body, body_too_large */
+  SEXP out  = PROTECT(Rf_allocVector(VECSXP, 7));
+  SEXP nms  = PROTECT(Rf_allocVector(STRSXP, 7));
 
   SET_STRING_ELT(nms, 0, Rf_mkChar("id"));
   SET_STRING_ELT(nms, 1, Rf_mkChar("method"));
   SET_STRING_ELT(nms, 2, Rf_mkChar("path"));
+  SET_STRING_ELT(nms, 3, Rf_mkChar("query"));
+  SET_STRING_ELT(nms, 4, Rf_mkChar("headers"));
+  SET_STRING_ELT(nms, 5, Rf_mkChar("body"));
+  SET_STRING_ELT(nms, 6, Rf_mkChar("body_too_large"));
   Rf_setAttrib(out, R_NamesSymbol, nms);
 
   SET_VECTOR_ELT(out, 0, Rf_ScalarInteger(r->id));
   SET_VECTOR_ELT(out, 1, Rf_mkString(r->method ? r->method : ""));
   SET_VECTOR_ELT(out, 2, Rf_mkString(r->path ? r->path : ""));
+  SET_VECTOR_ELT(out, 3, Rf_mkString(r->query ? r->query : ""));
 
-  UNPROTECT(2);
+  /* headers as named character vector (names may repeat) */
+  SEXP hval = PROTECT(Rf_allocVector(STRSXP, r->num_headers));
+  SEXP hnm  = PROTECT(Rf_allocVector(STRSXP, r->num_headers));
+  for (int i = 0; i < r->num_headers; i++) {
+    SET_STRING_ELT(hnm, i, Rf_mkChar(r->headers[i].name ? r->headers[i].name : ""));
+    SET_STRING_ELT(hval, i, Rf_mkChar(r->headers[i].value ? r->headers[i].value : ""));
+  }
+  Rf_setAttrib(hval, R_NamesSymbol, hnm);
+  SET_VECTOR_ELT(out, 4, hval);
+
+  /* body as raw() */
+  if (r->req_body && r->req_body_len > 0) {
+    SEXP b = PROTECT(Rf_allocVector(RAWSXP, (R_xlen_t)r->req_body_len));
+    memcpy(RAW(b), r->req_body, r->req_body_len);
+    SET_VECTOR_ELT(out, 5, b);
+    UNPROTECT(1);
+  } else {
+    SET_VECTOR_ELT(out, 5, Rf_allocVector(RAWSXP, 0));
+  }
+
+  SET_VECTOR_ELT(out, 6, Rf_ScalarLogical(r->req_body_too_large ? 1 : 0));
+
+  UNPROTECT(4);
   return out;
 }
 

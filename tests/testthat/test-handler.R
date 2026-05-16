@@ -109,3 +109,80 @@ test_that("group applies prefix correctly", {
 
   expect_true(is.function(.get_handler("GET", "/api/x")))
 })
+
+test_that("parse_query handles basic cases", {
+  expect_equal(.parse_query("a=1"), list(a = "1"))
+
+  expect_equal(
+    .parse_query("a=1&b=2"),
+    list(a = "1", b = "2")
+  )
+
+  expect_equal(
+    .parse_query("flag"),
+    list(flag = "")
+  )
+
+  expect_equal(
+    .parse_query("name=tom%20lee"),
+    list(name = "tom lee")
+  )
+})
+
+test_that("query_params available in handler", {
+  clear_handlers()
+
+  handle("GET", "/test", function(req) {
+    req$query_params$name
+  })
+
+  req <- list(query = "name=tom")
+
+  res <- .dispatch_request("GET", "/test", req)
+
+  expect_equal(res$body, "tom")
+})
+
+test_that("headers are available in handler", {
+  clear_handlers()
+
+  handle("GET", "/h", function(req) {
+    req$headers[["X-Test"]]
+  })
+
+  req <- list(headers = c("X-Test" = "ok"))
+  res <- .dispatch_request("GET", "/h", req = req)
+
+  expect_equal(res$body, "ok")
+})
+
+test_that("body is available in handler (raw)", {
+  clear_handlers()
+
+  handle("POST", "/b", function(req) {
+    rawToChar(req$body)
+  })
+
+  req <- list(body = charToRaw("abc"))
+  res <- .dispatch_request("POST", "/b", req = req)
+
+  expect_equal(res$body, "abc")
+})
+
+test_that("query_params + headers + body all present", {
+  clear_handlers()
+
+  handle("POST", "/all", function(req) {
+    paste(
+      req$query_params$a,
+      req$headers[["X-T"]],
+      rawToChar(req$body),
+      sep = "|"
+    )
+  })
+
+  req <- list(query = "a=1", headers = c("X-T" = "t"), body = charToRaw("z"))
+  res <- .dispatch_request("POST", "/all", req = req)
+
+  expect_equal(res$body, "1|t|z")
+})

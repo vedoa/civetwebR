@@ -65,6 +65,7 @@ serve <- function(
 
     req <- .next_request(100L)
 
+    # ---- interrupt handling ----
     if (is.list(req) && isTRUE(req$interrupted)) {
       stop_server()
       break
@@ -74,6 +75,7 @@ serve <- function(
       next
     }
 
+    # ---- logging ----
     if (!is.null(log)) {
       try(log(req), silent = TRUE)
     }
@@ -101,7 +103,7 @@ serve <- function(
 
     # ---- routing ----
     if (is.null(res)) {
-      res <- .dispatch_request(req$method, req$path)
+      res <- .dispatch_request(req$method, req$path, req = req)
     }
 
     .send_response(req$id, res)
