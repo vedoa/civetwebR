@@ -84,6 +84,38 @@ static_files <- function(
     tryCatch(utils::URLdecode(x), error = function(e) x)
   }
 
+  .breadcrumb <- function(path) {
+    parts <- strsplit(sub("^/+", "", path), "/", fixed = TRUE)[[1]]
+
+    # root only
+    if (length(parts) == 1 && parts == "") {
+      return('<a href="/">/</a>')
+    }
+
+    acc <- ""
+    crumbs <- '<a href="/">/</a>'
+
+    for (i in seq_along(parts)) {
+      p <- parts[i]
+      acc <- paste0(acc, "/", p)
+
+      # no " / " directly after root
+      sep <- if (i == 1) " " else " / "
+
+      crumbs <- paste0(
+        crumbs,
+        sep,
+        '<a href="',
+        acc,
+        '/">',
+        .html_escape(p),
+        '</a>'
+      )
+    }
+
+    crumbs
+  }
+
   function(req) {
     path <- req$path
     if (is.null(path) || !is.character(path)) {
@@ -195,6 +227,7 @@ static_files <- function(
         body <- template_html
         body <- sub("{{path}}", .html_escape(path), body, fixed = TRUE)
         body <- sub("{{files}}", files_html, body, fixed = TRUE)
+        body <- sub("{{breadcrumb}}", .breadcrumb(path), body, fixed = TRUE)
 
         return(list(
           status = 200L,

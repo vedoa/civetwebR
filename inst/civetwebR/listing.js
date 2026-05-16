@@ -18,11 +18,11 @@
 
     function updateIndicators() {
         buttons.forEach(btn => {
-            const base = btn.dataset.sort === "name" ? "Name" :
-                btn.dataset.sort === "size" ? "Size" :
-                    "Modified";
+            const key = btn.dataset.sort;
+            const base = key === "name" ? "Name" :
+                key === "size" ? "Size" : "Modified";
 
-            if (btn.dataset.sort === sortKey) {
+            if (key === sortKey) {
                 btn.textContent = base + (sortDir === 1 ? " ▲" : " ▼");
             } else {
                 btn.textContent = base;
@@ -34,7 +34,6 @@
         const at = a.dataset.type || "file";
         const bt = b.dataset.type || "file";
 
-        // dirs always first
         if (at !== bt) return at === "dir" ? -1 : 1;
 
         if (sortKey === "size") {
