@@ -1,0 +1,44 @@
+body {
+    font-family: system-ui, sans-serif;
+    margin: 40px;
+    background: #f7f7f7;
+    color: #222;
+}
+
+h1 {
+    margin-bottom: 20px;
+}
+
+.nav {
+    margin-bottom: 20px;
+}
+
+.parent {
+    display: inline-block;
+    margin-bottom: 10px;
+    font-weight: bold;
+    text-decoration: none;
+    color: #444;
+}
+
+.parent:hover {
+    text-decoration: underline;
+}
+
+.files a {
+    display: block;
+    padding: 6px 10px;
+    margin: 2px 0;
+    background: white;
+    border-radius: 6px;
+    text-decoration: none;
+    color: #007acc;
+}
+
+.files a:hover {
+    background: #e6f2ff;
+}
+
+a {
+    transition: background 0.15s;
+}

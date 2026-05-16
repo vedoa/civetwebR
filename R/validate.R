@@ -184,6 +184,7 @@
   for (i in seq_along(static)) {
     x <- static[[i]]
 
+    # ---- dir ----
     if (is.null(x$dir)) {
       stop("static$dir is required", call. = FALSE)
     }
@@ -194,6 +195,7 @@
       stop("static$dir must be an existing directory", call. = FALSE)
     }
 
+    # ---- prefix ----
     prefix <- if (is.null(x$prefix)) "/" else x$prefix
     if (!is.character(prefix) || length(prefix) != 1L || is.na(prefix)) {
       stop("static$prefix must be character(1)", call. = FALSE)
@@ -203,11 +205,13 @@
       prefix <- "/"
     }
 
+    # ---- index ----
     index <- if (is.null(x$index)) "index.html" else x$index
     if (!is.character(index) || length(index) < 1L || anyNA(index)) {
       stop("static$index must be a character vector", call. = FALSE)
     }
 
+    # ---- cache_control ----
     cache_control <- x$cache_control
     if (
       !is.null(cache_control) &&
@@ -218,11 +222,31 @@
       stop("static$cache_control must be NULL or character(1)", call. = FALSE)
     }
 
+    # ---- list_dirs ----
+    list_dirs <- if (is.null(x$list_dirs)) FALSE else x$list_dirs
+    if (!is.logical(list_dirs) || length(list_dirs) != 1L) {
+      stop("static$list_dirs must be TRUE/FALSE", call. = FALSE)
+    }
+
+    # ---- template ----
+    template <- x$template
+    if (
+      !is.null(template) &&
+        (!is.character(template) || length(template) != 1L || is.na(template))
+    ) {
+      stop("static$template must be NULL or character(1)", call. = FALSE)
+    }
+    if (!is.null(template) && !file.exists(template)) {
+      stop("static$template must point to an existing file", call. = FALSE)
+    }
+
     out[[i]] <- list(
       dir = x$dir,
       prefix = prefix,
       index = index,
-      cache_control = cache_control
+      cache_control = cache_control,
+      list_dirs = list_dirs,
+      template = template
     )
   }
 
@@ -231,5 +255,6 @@
     vapply(out, function(s) nchar(s$prefix), integer(1)),
     decreasing = TRUE
   )
+
   out[ord]
 }
