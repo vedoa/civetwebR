@@ -11,7 +11,8 @@ serve <- function(
   port = 8080L,
   host = "127.0.0.1",
   quiet = FALSE,
-  log = NULL
+  log = NULL,
+  static = NULL
 ) {
   args <- .validate_serve_input(port, host, quiet, log)
 
@@ -19,6 +20,20 @@ serve <- function(
   host <- args$host
   quiet <- args$quiet
   log <- args$log
+
+  static_cfg <- .validate_static(static)
+
+  static_funs <- NULL
+  if (!is.null(static_cfg)) {
+    static_funs <- lapply(static_cfg, function(s) {
+      static_files(
+        dir = s$dir,
+        prefix = s$prefix,
+        index = s$index,
+        cache_control = s$cache_control
+      )
+    })
+  }
 
   if (.is_loop_running()) {
     stop("Server loop is already running", call. = FALSE)
@@ -42,37 +57,55 @@ serve <- function(
     add = TRUE
   )
 
-  tryCatch(
-    {
-      repeat {
-        req <- .next_request(100L)
-
-        if (is.null(req)) {
-          next
-        }
-
-        if (!is.null(log)) {
-          try(log(req), silent = TRUE)
-        }
-
-        res <- .dispatch_request(req$method, req$path)
-        .send_response(req$id, res)
-      }
-    },
-    interrupt = function(e) {
-      invisible(NULL)
+  repeat {
+    # ---- allow external stop ----
+    if (!.is_running()) {
+      break
     }
-  )
-}
 
+    req <- .next_request(100L)
 
-#' @rdname serve
-#' @keywords internal
-.validate_serve_input <- function(port, host, quiet, log) {
-  list(
-    port = .validate_port(port),
-    host = .validate_host(host),
-    quiet = .validate_quiet(quiet),
-    log = .validate_log(log)
-  )
+    if (is.list(req) && isTRUE(req$interrupted)) {
+      stop_server()
+      break
+    }
+
+    if (is.null(req)) {
+      next
+    }
+
+    if (!is.null(log)) {
+      try(log(req), silent = TRUE)
+    }
+
+    res <- NULL
+
+    # ---- static ----
+    if (!is.null(static_funs)) {
+      for (i in seq_along(static_funs)) {
+        if (startsWith(req$path, static_cfg[[i]]$prefix)) {
+          res <- tryCatch(
+            static_funs[[i]](req),
+            error = function(e) {
+              list(
+                status = 500L,
+                headers = list(),
+                body = "Internal Server Error"
+              )
+            }
+          )
+          break
+        }
+      }
+    }
+
+    # ---- routing ----
+    if (is.null(res)) {
+      res <- .dispatch_request(req$method, req$path)
+    }
+
+    .send_response(req$id, res)
+  }
+
+  invisible(NULL)
 }

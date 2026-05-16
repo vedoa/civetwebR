@@ -1,6 +1,7 @@
 #include <R.h>
 #include <Rinternals.h>
 #include <R_ext/Error.h>
+#include <R_ext/Utils.h>   /* R_CheckUserInterrupt, R_ToplevelExec */
 
 #include <stdlib.h>
 #include <string.h>
@@ -20,7 +21,7 @@
 
   #define cw_cond_init      InitializeConditionVariable
   #define cw_cond_signal    WakeConditionVariable
-  /* FIX: SleepConditionVariableCS needs (cv, cs, timeout) */
+  #define cw_cond_broadcast WakeAllConditionVariable
   #define cw_cond_wait(c,m) SleepConditionVariableCS((c),(m),INFINITE)
 #else
   #include <pthread.h>
@@ -36,12 +37,9 @@
 
   #define cw_cond_init(c)     pthread_cond_init((c), NULL)
   #define cw_cond_signal      pthread_cond_signal
+  #define cw_cond_broadcast   pthread_cond_broadcast
   #define cw_cond_wait(c,m)   pthread_cond_wait((c),(m))
 #endif
-
-/* ============================================================ */
-/* REQUEST STRUCT                                                */
-/* ============================================================ */
 
 typedef struct cw_request {
   int id;
@@ -62,10 +60,7 @@ typedef struct cw_request {
   struct cw_request *next;
 } cw_request_t;
 
-/* ============================================================ */
-/* GLOBAL STATE                                                  */
-/* ============================================================ */
-
+/* GLOBAL STATE */
 static cw_request_t *q_head = NULL, *q_tail = NULL;
 static cw_request_t *active_head = NULL;
 
@@ -75,16 +70,15 @@ static cw_cond_t  q_cv;
 static int next_id = 1;
 static int inited = 0;
 
+/* server running flag to unblock waits on stop */
+static int g_running = 0;
+
 static void init_once(void) {
   if (inited) return;
   cw_mutex_init(&g_lock);
   cw_cond_init(&q_cv);
   inited = 1;
 }
-
-/* ============================================================ */
-/* UTILS                                                         */
-/* ============================================================ */
 
 static char *dup_str(const char *s) {
   if (!s) s = "";
@@ -108,13 +102,9 @@ static void free_req(cw_request_t *r) {
   free(r);
 }
 
-/* ============================================================ */
-/* TIMED WAIT                                                    */
-/* ============================================================ */
-
+/* timed wait (used for polling) */
 static int cond_wait_ms(cw_cond_t *cv, cw_mutex_t *mtx, int ms) {
 #ifdef _WIN32
-  /* returns nonzero on success, zero on timeout/failure */
   return SleepConditionVariableCS(cv, mtx, (DWORD)ms);
 #else
   struct timespec ts;
@@ -128,10 +118,22 @@ static int cond_wait_ms(cw_cond_t *cv, cw_mutex_t *mtx, int ms) {
 #endif
 }
 
-/* ============================================================ */
-/* QUEUE                                                         */
-/* ============================================================ */
+/* ------------------------------------------------------------
+ * Interrupt-safe check:
+ * returns 1 if an interrupt is pending, 0 otherwise.
+ * Uses R_ToplevelExec to avoid longjmp out of our context.
+ * ------------------------------------------------------------ */
+static void check_interrupt_cb(void *dummy) {
+  (void)dummy;
+  R_CheckUserInterrupt();
+}
 
+static int interrupt_pending(void) {
+  /* R_ToplevelExec returns FALSE if it longjmp'd (interrupt) */
+  return (R_ToplevelExec(check_interrupt_cb, NULL) == FALSE);
+}
+
+/* enqueue request */
 static void enqueue(cw_request_t *r) {
   cw_mutex_lock(&g_lock);
 
@@ -144,22 +146,45 @@ static void enqueue(cw_request_t *r) {
   cw_mutex_unlock(&g_lock);
 }
 
+/* dequeue with timeout
+ * returns:
+ *   1 => got request (*out set)
+ *   0 => timeout or stopped (*out=NULL)
+ *  -1 => user interrupt detected
+ */
 static int dequeue_timeout(cw_request_t **out, int timeout_ms) {
-  cw_request_t *r = NULL;
+  if (timeout_ms < 0) timeout_ms = 0;
 
   cw_mutex_lock(&g_lock);
 
-  if (!q_head) {
-    (void)cond_wait_ms(&q_cv, &g_lock, timeout_ms);
+  int remaining = timeout_ms;
+
+  while (q_head == NULL && g_running) {
+    cw_mutex_unlock(&g_lock);
+
+    /* check user interrupt without longjmp out of our stack */
+    if (interrupt_pending()) {
+      *out = NULL;
+      return -1;
+    }
+
+    cw_mutex_lock(&g_lock);
+
+    if (q_head != NULL || !g_running) break;
+    if (remaining <= 0) break;
+
+    int slice = remaining > 50 ? 50 : remaining;
+    (void)cond_wait_ms(&q_cv, &g_lock, slice);
+    remaining -= slice;
   }
 
-  if (!q_head) {
+  if (!g_running || q_head == NULL) {
     cw_mutex_unlock(&g_lock);
     *out = NULL;
     return 0;
   }
 
-  r = q_head;
+  cw_request_t *r = q_head;
   q_head = r->next;
   if (!q_head) q_tail = NULL;
 
@@ -190,12 +215,8 @@ static void remove_active(cw_request_t *r) {
   }
 }
 
-/* ============================================================ */
-/* RESPONSE PARSER                                               */
-/* ============================================================ */
-
+/* response parser */
 static void apply_response_from_R(cw_request_t *r, SEXP res) {
-  /* defaults */
   r->status = 200;
 
   free(r->content_type);
@@ -205,7 +226,6 @@ static void apply_response_from_R(cw_request_t *r, SEXP res) {
   r->body = NULL;
   r->body_len = 0;
 
-  /* allow simple character(1) shortcut */
   if (TYPEOF(res) == STRSXP && LENGTH(res) >= 1) {
     SEXP s0 = STRING_ELT(res, 0);
     const char *s = (s0 == NA_STRING) ? "" : CHAR(s0);
@@ -225,9 +245,7 @@ static void apply_response_from_R(cw_request_t *r, SEXP res) {
     if (strcmp(n, "status") == 0) {
       int sc = Rf_asInteger(VECTOR_ELT(res, i));
       r->status = (sc == NA_INTEGER) ? 500 : sc;
-    }
-
-    else if (strcmp(n, "body") == 0) {
+    } else if (strcmp(n, "body") == 0) {
       SEXP b = VECTOR_ELT(res, i);
 
       free(r->body);
@@ -254,9 +272,7 @@ static void apply_response_from_R(cw_request_t *r, SEXP res) {
           }
         }
       }
-    }
-
-    else if (strcmp(n, "headers") == 0) {
+    } else if (strcmp(n, "headers") == 0) {
       SEXP h = VECTOR_ELT(res, i);
       if (TYPEOF(h) != VECSXP) continue;
 
@@ -278,10 +294,7 @@ static void apply_response_from_R(cw_request_t *r, SEXP res) {
   }
 }
 
-/* ============================================================ */
-/* HTTP HANDLER (NO R API)                                       */
-/* ============================================================ */
-
+/* HTTP handler (NO R API) */
 static int handler(struct mg_connection *conn, void *cbdata) {
   (void)cbdata;
   init_once();
@@ -298,6 +311,12 @@ static int handler(struct mg_connection *conn, void *cbdata) {
   cw_cond_init(&r->cv);
 
   cw_mutex_lock(&g_lock);
+  if (!g_running) {
+    cw_mutex_unlock(&g_lock);
+    mg_printf(conn, "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n");
+    free_req(r);
+    return 1;
+  }
   r->id = next_id++;
   cw_mutex_unlock(&g_lock);
 
@@ -322,7 +341,6 @@ static int handler(struct mg_connection *conn, void *cbdata) {
   }
   cw_mutex_unlock(&r->lock);
 
-  /* FIX: avoid %zu portability issues; cast size_t -> unsigned long */
   mg_printf(conn,
     "HTTP/1.1 %d OK\r\nContent-Length: %lu\r\nContent-Type: %s\r\n\r\n",
     r->status,
@@ -342,9 +360,7 @@ static int handler(struct mg_connection *conn, void *cbdata) {
   return 1;
 }
 
-/* ============================================================ */
-/* R API                                                         */
-/* ============================================================ */
+/* R API */
 
 SEXP civetweb_next_request_timeout(SEXP timeout_ms) {
   init_once();
@@ -355,7 +371,21 @@ SEXP civetweb_next_request_timeout(SEXP timeout_ms) {
   }
 
   cw_request_t *r = NULL;
-  if (!dequeue_timeout(&r, ms)) {
+  int rc = dequeue_timeout(&r, ms);
+
+  /* IMPORTANT: do NOT call R_CheckUserInterrupt() here (it can longjmp).
+     Instead, return a sentinel to R so R can stop cleanly. */
+  if (rc == -1) {
+    SEXP out = PROTECT(Rf_allocVector(VECSXP, 1));
+    SEXP nms = PROTECT(Rf_allocVector(STRSXP, 1));
+    SET_STRING_ELT(nms, 0, Rf_mkChar("interrupted"));
+    Rf_setAttrib(out, R_NamesSymbol, nms);
+    SET_VECTOR_ELT(out, 0, Rf_ScalarLogical(1));
+    UNPROTECT(2);
+    return out;
+  }
+
+  if (rc == 0) {
     return R_NilValue;
   }
 
@@ -399,9 +429,7 @@ SEXP civetweb_send_response(SEXP idS, SEXP res) {
   return R_NilValue;
 }
 
-/* ============================================================ */
-/* SERVER                                                        */
-/* ============================================================ */
+/* SERVER */
 
 SEXP civetweb_start_server(SEXP portS, SEXP hostS) {
   init_once();
@@ -409,7 +437,6 @@ SEXP civetweb_start_server(SEXP portS, SEXP hostS) {
   if (!Rf_isInteger(portS) || LENGTH(portS) < 1) {
     Rf_error("port must be an integer");
   }
-
   if (!Rf_isString(hostS) || LENGTH(hostS) < 1) {
     Rf_error("host must be character(1)");
   }
@@ -417,8 +444,7 @@ SEXP civetweb_start_server(SEXP portS, SEXP hostS) {
   int port = INTEGER(portS)[0];
   const char *host = CHAR(STRING_ELT(hostS, 0));
 
-  /* build "host:port" */
-  char addr[64];
+  char addr[128];
   snprintf(addr, sizeof(addr), "%s:%d", host, port);
 
   const char *opts[] = {
@@ -427,8 +453,17 @@ SEXP civetweb_start_server(SEXP portS, SEXP hostS) {
     NULL
   };
 
+  cw_mutex_lock(&g_lock);
+  g_running = 1;
+  cw_mutex_unlock(&g_lock);
+
   struct mg_context *ctx = mg_start(NULL, NULL, opts);
-  if (!ctx) Rf_error("start failed");
+  if (!ctx) {
+    cw_mutex_lock(&g_lock);
+    g_running = 0;
+    cw_mutex_unlock(&g_lock);
+    Rf_error("start failed");
+  }
 
   mg_set_request_handler(ctx, "/", handler, NULL);
 
@@ -436,14 +471,57 @@ SEXP civetweb_start_server(SEXP portS, SEXP hostS) {
 }
 
 SEXP civetweb_stop_server(SEXP xptr) {
+  init_once();
+
   if (TYPEOF(xptr) != EXTPTRSXP) {
     Rf_error("Invalid server pointer");
   }
 
   struct mg_context *ctx = (struct mg_context *)R_ExternalPtrAddr(xptr);
+
+  cw_mutex_lock(&g_lock);
+  g_running = 0;
+
+  /* wake next_request waiters */
+  cw_cond_broadcast(&q_cv);
+
+  /* wake any request handlers waiting for a response */
+  for (cw_request_t *r = q_head; r; r = r->next) {
+    cw_mutex_lock(&r->lock);
+    if (!r->responded) {
+      r->status = 503;
+      free(r->content_type);
+      r->content_type = dup_str("text/plain");
+      free(r->body);
+      r->body = (unsigned char *)dup_str("Service Unavailable");
+      r->body_len = strlen((const char *)r->body);
+      r->responded = 1;
+      cw_cond_signal(&r->cv);
+    }
+    cw_mutex_unlock(&r->lock);
+  }
+
+  for (cw_request_t *r = active_head; r; r = r->next) {
+    cw_mutex_lock(&r->lock);
+    if (!r->responded) {
+      r->status = 503;
+      free(r->content_type);
+      r->content_type = dup_str("text/plain");
+      free(r->body);
+      r->body = (unsigned char *)dup_str("Service Unavailable");
+      r->body_len = strlen((const char *)r->body);
+      r->responded = 1;
+      cw_cond_signal(&r->cv);
+    }
+    cw_mutex_unlock(&r->lock);
+  }
+
+  cw_mutex_unlock(&g_lock);
+
   if (ctx) {
     R_SetExternalPtrAddr(xptr, NULL);
     mg_stop(ctx);
   }
+
   return R_NilValue;
 }

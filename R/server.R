@@ -27,7 +27,6 @@ start_server <- function(port = 8080L, host = "127.0.0.1") {
 #' @export
 stop_server <- function() {
   .validate_is_not_running()
-  .validate_is_loop_running()
 
   .Call(civetweb_stop_server, .state$server_xptr, PACKAGE = "civetwebR")
 

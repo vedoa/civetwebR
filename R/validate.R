@@ -10,11 +10,6 @@
   }
 }
 
-.validate_is_loop_running <- function(){
-  if (.is_loop_running()) {
-    stop("Cannot stop server while loop is running", call. = FALSE)
-  }
-}
 
 .validate_port <- function(port) {
   if (!is.numeric(port) || length(port) != 1L || is.na(port)) {
@@ -158,4 +153,83 @@
   }
 
   log
+}
+
+#' @rdname serve
+#' @keywords internal
+.validate_serve_input <- function(port, host, quiet, log) {
+  list(
+    port = .validate_port(port),
+    host = .validate_host(host),
+    quiet = .validate_quiet(quiet),
+    log = .validate_log(log)
+  )
+}
+
+.validate_static <- function(static) {
+  if (is.null(static)) {
+    return(NULL)
+  }
+  if (!is.list(static)) {
+    stop("static must be NULL or a list", call. = FALSE)
+  }
+
+  # normalize: single config -> list(config)
+  if (!all(vapply(static, is.list, logical(1)))) {
+    static <- list(static)
+  }
+
+  out <- vector("list", length(static))
+
+  for (i in seq_along(static)) {
+    x <- static[[i]]
+
+    if (is.null(x$dir)) {
+      stop("static$dir is required", call. = FALSE)
+    }
+    if (!is.character(x$dir) || length(x$dir) != 1L || is.na(x$dir)) {
+      stop("static$dir must be character(1)", call. = FALSE)
+    }
+    if (!dir.exists(x$dir)) {
+      stop("static$dir must be an existing directory", call. = FALSE)
+    }
+
+    prefix <- if (is.null(x$prefix)) "/" else x$prefix
+    if (!is.character(prefix) || length(prefix) != 1L || is.na(prefix)) {
+      stop("static$prefix must be character(1)", call. = FALSE)
+    }
+    prefix <- .normalize_prefix(prefix)
+    if (prefix == "") {
+      prefix <- "/"
+    }
+
+    index <- if (is.null(x$index)) "index.html" else x$index
+    if (!is.character(index) || length(index) < 1L || anyNA(index)) {
+      stop("static$index must be a character vector", call. = FALSE)
+    }
+
+    cache_control <- x$cache_control
+    if (
+      !is.null(cache_control) &&
+        (!is.character(cache_control) ||
+          length(cache_control) != 1L ||
+          is.na(cache_control))
+    ) {
+      stop("static$cache_control must be NULL or character(1)", call. = FALSE)
+    }
+
+    out[[i]] <- list(
+      dir = x$dir,
+      prefix = prefix,
+      index = index,
+      cache_control = cache_control
+    )
+  }
+
+  # autosort: longest prefix first (avoids "/" shadowing "/assets")
+  ord <- order(
+    vapply(out, function(s) nchar(s$prefix), integer(1)),
+    decreasing = TRUE
+  )
+  out[ord]
 }

@@ -11,12 +11,15 @@ local_server <- function(port = 8080L) {
 
   start_server(port)
 
-  on.exit({
-    if (.is_running()) {
-      try(stop_server(), silent = TRUE)
-      Sys.sleep(0.1)
-    }
-  }, add = TRUE)
+  on.exit(
+    {
+      if (.is_running()) {
+        try(stop_server(), silent = TRUE)
+        Sys.sleep(0.1)
+      }
+    },
+    add = TRUE
+  )
 
   invisible(port)
 }
@@ -118,8 +121,249 @@ test_that("group applies prefix correctly", {
 })
 
 # ------------------------------------------------------------------
-# HTTP tests (DISABLED for driver-loop model)
+# Integration tests: STATIC (real HTTP)
 # ------------------------------------------------------------------
-test_that("HTTP tests disabled (driver loop requires concurrency)", {
-  skip("HTTP integration requires concurrent loop, not supported in base tests")
+test_that("integration: static serving works", {
+  skip_on_cran()
+  skip_if_not_installed("callr")
+  skip_if_not_installed("pkgload")
+
+  tmp <- tempdir()
+
+  public <- file.path(tmp, "public")
+  assets <- file.path(tmp, "assets")
+
+  dir.create(public, showWarnings = FALSE)
+  dir.create(assets, showWarnings = FALSE)
+
+  writeLines("root-file", file.path(public, "file.txt"))
+  writeLines("asset-file", file.path(assets, "file.txt"))
+  writeLines("INDEX", file.path(public, "index.html"))
+
+  port <- sample(10000:20000, 1)
+  base <- sprintf("http://127.0.0.1:%d", port)
+  pkg_path <- normalizePath(".")
+
+  p <- callr::r_bg(
+    function(pkg_path, tmp, port) {
+      pkgload::load_all(pkg_path)
+
+      public <- file.path(tmp, "public")
+      assets <- file.path(tmp, "assets")
+
+      serve(
+        port = port,
+        host = "127.0.0.1",
+        quiet = TRUE,
+        static = list(
+          list(dir = public, prefix = "/"),
+          list(dir = assets, prefix = "/assets")
+        )
+      )
+    },
+    args = list(pkg_path, tmp, port)
+  )
+
+  on.exit(
+    {
+      if (p$is_alive()) p$kill()
+    },
+    add = TRUE
+  )
+
+  wait_for_server <- function(url, p) {
+    for (i in 1:40) {
+      if (!p$is_alive()) {
+        stop("Server crashed:\n", p$read_error())
+      }
+
+      ok <- tryCatch(
+        {
+          con <- url(url)
+          close(con)
+          TRUE
+        },
+        error = function(e) FALSE
+      )
+
+      if (ok) {
+        return(TRUE)
+      }
+
+      Sys.sleep(0.1)
+    }
+    stop("Server did not start")
+  }
+
+  wait_for_server(base, p)
+
+  GET <- function(path) {
+    con <- url(paste0(base, path))
+    on.exit(close(con), add = TRUE)
+    paste(readLines(con, warn = FALSE), collapse = "\n")
+  }
+
+  expect_match(GET("/file.txt"), "root-file", fixed = TRUE)
+  expect_match(GET("/assets/file.txt"), "asset-file", fixed = TRUE)
+  expect_match(GET("/"), "INDEX", fixed = TRUE)
+})
+
+
+# ------------------------------------------------------------------
+# Integration tests: ROUTING (real HTTP, no static)
+# ------------------------------------------------------------------
+test_that("integration: routing works", {
+  skip_on_cran()
+  skip_if_not_installed("callr")
+  skip_if_not_installed("pkgload")
+
+  port <- sample(10000:20000, 1)
+  base <- sprintf("http://127.0.0.1:%d", port)
+  pkg_path <- normalizePath(".")
+
+  p <- callr::r_bg(
+    function(pkg_path, port) {
+      pkgload::load_all(pkg_path)
+
+      handle("GET", "/hello", function(req) "HELLO")
+
+      group("/api", {
+        handle("GET", "/world", function(req) "WORLD")
+      })
+
+      serve(
+        port = port,
+        host = "127.0.0.1",
+        quiet = TRUE,
+        static = NULL
+      )
+    },
+    args = list(pkg_path, port)
+  )
+
+  on.exit(
+    {
+      if (p$is_alive()) p$kill()
+    },
+    add = TRUE
+  )
+
+  wait_for_server <- function(url, p) {
+    for (i in 1:40) {
+      if (!p$is_alive()) {
+        stop("Server crashed:\n", p$read_error())
+      }
+
+      ok <- tryCatch(
+        {
+          con <- url(url)
+          close(con)
+          TRUE
+        },
+        error = function(e) FALSE
+      )
+
+      if (ok) {
+        return(TRUE)
+      }
+
+      Sys.sleep(0.1)
+    }
+    stop("Server did not start")
+  }
+
+  wait_for_server(base, p)
+
+  GET <- function(path) {
+    con <- url(paste0(base, path))
+    on.exit(close(con), add = TRUE)
+    paste(readLines(con, warn = FALSE), collapse = "\n")
+  }
+
+  expect_match(GET("/hello"), "HELLO", fixed = TRUE)
+  expect_match(GET("/api/world"), "WORLD", fixed = TRUE)
+})
+
+
+# ------------------------------------------------------------------
+# Integration tests: STATIC overrides ROUTING
+# ------------------------------------------------------------------
+test_that("integration: static overrides routing when overlapping", {
+  skip_on_cran()
+  skip_if_not_installed("callr")
+  skip_if_not_installed("pkgload")
+
+  tmp <- tempdir()
+
+  public <- file.path(tmp, "public")
+  dir.create(public, showWarnings = FALSE)
+
+  # static file that conflicts with route
+  dir.create(file.path(public, "api"), showWarnings = FALSE)
+  writeLines("STATIC", file.path(public, "api", "hello"))
+
+  port <- sample(10000:20000, 1)
+  base <- sprintf("http://127.0.0.1:%d", port)
+  pkg_path <- normalizePath(".")
+
+  p <- callr::r_bg(
+    function(pkg_path, tmp, port) {
+      pkgload::load_all(pkg_path)
+
+      handle("GET", "/api/hello", function(req) {
+        "ROUTE"
+      })
+
+      serve(
+        port = port,
+        host = "127.0.0.1",
+        quiet = TRUE,
+        static = list(
+          list(dir = file.path(tmp, "public"), prefix = "/")
+        )
+      )
+    },
+    args = list(pkg_path, tmp, port)
+  )
+
+  on.exit(
+    {
+      if (p$is_alive()) p$kill()
+    },
+    add = TRUE
+  )
+
+  wait_for_server <- function(url, p) {
+    for (i in 1:40) {
+      if (!p$is_alive()) {
+        stop("Server crashed:\n", p$read_error())
+      }
+
+      ok <- tryCatch(
+        {
+          con <- url(url)
+          close(con)
+          TRUE
+        },
+        error = function(e) FALSE
+      )
+
+      if (ok) {
+        return(TRUE)
+      }
+
+      Sys.sleep(0.1)
+    }
+    stop("Server did not start")
+  }
+
+  wait_for_server(base, p)
+
+  GET <- function(path) {
+    con <- url(paste0(base, path))
+    on.exit(close(con), add = TRUE)
+    paste(readLines(con, warn = FALSE), collapse = "\n")
+  }
+
+  expect_match(GET("/api/hello"), "STATIC", fixed = TRUE)
 })
