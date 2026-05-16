@@ -1,0 +1,16 @@
+{
+	"build": {
+		"dockerfile": "dockerfile"
+	},
+	"workspaceFolder": "/workspaces/civetwebr",
+	"workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/civetwebr,type=bind",
+	"customizations": {
+		"vscode": {
+			"extensions": [
+				"REditorSupport.r", //R support for VS code
+				"streetsidesoftware.code-spell-checker", //code spell checking
+				"Posit.air-vscode" //formatter
+			]
+		}
+	}
+}
