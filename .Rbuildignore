@@ -1,0 +1,6 @@
+^\.git$
+^\.gitignore$
+^env/
+^\.devcontainer/
+^\.vscode/
+^README\.md$

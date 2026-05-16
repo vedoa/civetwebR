@@ -221,11 +221,10 @@ static_files <- function(
         template_html <- if (nzchar(tpl_path) && file.exists(tpl_path)) {
           readChar(tpl_path, file.info(tpl_path)$size)
         } else {
-          "<h1>{{path}}</h1>\n{{files}}"
+          "<h1>{{breadcrumb}}</h1>\n{{files}}"
         }
 
         body <- template_html
-        body <- sub("{{path}}", .html_escape(path), body, fixed = TRUE)
         body <- sub("{{files}}", files_html, body, fixed = TRUE)
         body <- sub("{{breadcrumb}}", .breadcrumb(path), body, fixed = TRUE)
 
