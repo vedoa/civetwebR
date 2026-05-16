@@ -5,13 +5,29 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>civetwebR Index</title>
-    <link rel="stylesheet" href="/civetwebR/styles.css">
 
+    <link rel="stylesheet" href="/civetwebR/styles.css">
+    <script defer src="/civetwebR/listing.js"></script>
 </head>
 
 <body>
+
     <h1>Index of {{path}}</h1>
-    {{files}}
+
+    <div class="files">
+
+        <div class="header">
+            <div class="name sortbtn" data-sort="name">Name</div>
+            <div class="size sortbtn" data-sort="size">Size</div>
+            <div class="time sortbtn" data-sort="mtime">Modified</div>
+        </div>
+
+        <div id="listing">
+            {{files}}
+        </div>
+
+    </div>
+
 </body>
 
 </html>

@@ -5,62 +5,79 @@ body {
     color: #2c2c2c;
 }
 
-/* ---- Header ---- */
 h1 {
-    margin-bottom: 16px;
+    margin: 0 0 14px 0;
     font-weight: 600;
-    color: #276DC3; /* R blue */
+    color: #276DC3;
 }
 
-/* ---- Navigation ---- */
-.nav {
-    margin-bottom: 16px;
-}
-
-/* Parent link */
-.parent {
-    display: inline-block;
-    padding: 6px 12px;
-    margin-bottom: 10px;
-    font-weight: 600;
-    text-decoration: none;
-    color: #4a4a4a;
-    background: #e3e6ea;
-    border-radius: 8px;
-    transition: all 0.15s ease;
-}
-
-.parent:hover {
-    background: #d5d9df;
-    color: #1f1f1f;
-}
-
-/* ---- File list ---- */
-.files a {
-    display: block;
-    padding: 8px 12px;
-    margin: 3px 0;
+/* container */
+.files {
     background: #ffffff;
-    border-radius: 8px;
-    text-decoration: none;
-    color: #276DC3; /* R blue */
     border: 1px solid #e2e5e9;
-    transition: all 0.15s ease;
+    border-radius: 12px;
+    overflow: hidden;
 }
 
-/* Hover effect (R-like highlight) */
-.files a:hover {
+/* header */
+.header {
+    display: flex;
+    gap: 10px;
+    padding: 10px 12px;
+    background: #f1f5fb;
+    border-bottom: 1px solid #e2e5e9;
+    font-weight: 700;
+}
+
+/* clickable header */
+.header .sortbtn {
+    cursor: pointer;
+}
+
+.header .sortbtn:hover {
+    color: #276DC3;
+}
+
+/* rows */
+.entry {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    padding: 10px 12px;
+    border-bottom: 1px solid #f0f0f0;
+}
+
+.entry:last-child {
+    border-bottom: 0;
+}
+
+.entry:hover {
     background: #eaf2ff;
-    border-color: #4F8DD3;
 }
 
-/* ---- Links (global) ---- */
-a {
-    transition: all 0.15s ease;
+/* columns */
+.name {
+    flex: 1;
+    text-decoration: none;
+    color: #276DC3;
+    font-weight: 500;
 }
 
-/* ---- Optional: subtle emphasis on folders ---- */
-.files a[href$="/"] {
-    font-weight: 600;
-    color: #1f5fb8;
+.name:hover {
+    text-decoration: underline;
+}
+
+.size {
+    width: 120px;
+    text-align: right;
+    color: #666;
+    font-variant-numeric: tabular-nums;
+}
+
+.time {
+    width: 170px;
+    text-align: right;
+    color: #666;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
 }
