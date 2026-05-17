@@ -31,26 +31,38 @@ test_that("integration: websocket handshake and echo work", {
     args = list(port, .libPaths(), pkg_path)
   )
 
-  on.exit({
-    if (p$is_alive()) p$kill()
-  }, add = TRUE)
+  on.exit(
+    {
+      if (p$is_alive()) p$kill()
+    },
+    add = TRUE
+  )
 
   wait_for_server(port, p)
 
   # Connect via raw socket to simulate a WebSocket client
-  con <- socketConnection(host = "127.0.0.1", port = port, open = "r+b", blocking = TRUE)
+  con <- socketConnection(
+    host = "127.0.0.1",
+    port = port,
+    open = "r+b",
+    blocking = TRUE
+  )
   on.exit(close(con), add = TRUE)
 
   # 1. Send WebSocket Handshake
-  writeLines(c(
-    "GET /ws HTTP/1.1",
-    "Host: 127.0.0.1",
-    "Upgrade: websocket",
-    "Connection: Upgrade",
-    "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==", # standard sample key
-    "Sec-WebSocket-Version: 13",
-    ""
-  ), con, sep = "\r\n")
+  writeLines(
+    c(
+      "GET /ws HTTP/1.1",
+      "Host: 127.0.0.1",
+      "Upgrade: websocket",
+      "Connection: Upgrade",
+      "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==", # standard sample key
+      "Sec-WebSocket-Version: 13",
+      ""
+    ),
+    con,
+    sep = "\r\n"
+  )
   flush(con)
 
   # 2. Verify 101 Switching Protocols response
@@ -68,7 +80,7 @@ test_that("integration: websocket handshake and echo work", {
   payload <- charToRaw("PING")
   mask_key <- as.raw(c(0x01, 0x02, 0x03, 0x04))
   masked_payload <- as.raw(bitwXor(as.integer(payload), as.integer(mask_key)))
-  
+
   # Frame: [Opcode 0x81 (Fin + Text)] [Mask=1, Len=4] [4-byte Mask Key] [Payload]
   writeBin(as.raw(c(0x81, 0x84)), con)
   writeBin(mask_key, con)
@@ -81,7 +93,7 @@ test_that("integration: websocket handshake and echo work", {
   expect_equal(header[1], as.raw(0x81)) # Opcode check
   len <- as.integer(header[2])
   expect_equal(len, 9)
-  
+
   res_body <- readBin(con, "raw", len)
   expect_equal(rawToChar(res_body), "ECHO:PING")
 })

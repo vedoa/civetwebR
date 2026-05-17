@@ -23,7 +23,16 @@ serve <- function(
   max_body_size = 8 * 1024 * 1024,
   request_timeout_ms = 30000L
 ) {
-  args <- .validate_serve_input(port, host, quiet, log, timeout_ms, num_threads, max_body_size, request_timeout_ms)
+  args <- .validate_serve_input(
+    port,
+    host,
+    quiet,
+    log,
+    timeout_ms,
+    num_threads,
+    max_body_size,
+    request_timeout_ms
+  )
 
   port <- args$port
   host <- args$host
@@ -103,39 +112,6 @@ serve <- function(
     },
     add = TRUE
   )
-
-  .prefix_match <- function(path, prefix) {
-    if (prefix == "/") {
-      return(TRUE)
-    }
-    if (!startsWith(path, prefix)) {
-      return(FALSE)
-    }
-
-    pfx_len <- nchar(prefix)
-    if (nchar(path) == pfx_len) {
-      return(TRUE)
-    }
-
-    substr(path, pfx_len + 1L, pfx_len + 1L) == "/"
-  }
-
-  .normalize_path <- function(path) {
-    if (
-      is.null(path) || !is.character(path) || length(path) != 1L || is.na(path)
-    ) {
-      path <- "/"
-    }
-    path <- sub("\\?.*$", "", path)
-    path <- gsub("\\\\", "/", path)
-    if (!startsWith(path, "/")) {
-      path <- paste0("/", path)
-    }
-    if (path == "") {
-      path <- "/"
-    }
-    path
-  }
 
   repeat {
     if (!.is_running()) {

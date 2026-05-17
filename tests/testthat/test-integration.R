@@ -417,13 +417,27 @@ test_that("integration: custom status text override works", {
     args = list(port, .libPaths(), pkg_path)
   )
 
-  on.exit({ if (p$is_alive()) p$kill() }, add = TRUE)
+  on.exit(
+    {
+      if (p$is_alive()) p$kill()
+    },
+    add = TRUE
+  )
   wait_for_server(port, p)
 
-  con <- socketConnection(host = "127.0.0.1", port = port, open = "r+", blocking = TRUE)
+  con <- socketConnection(
+    host = "127.0.0.1",
+    port = port,
+    open = "r+",
+    blocking = TRUE
+  )
   on.exit(close(con), add = TRUE)
 
-  writeChar("GET /teapot HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n", con, eos = NULL)
+  writeChar(
+    "GET /teapot HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    con,
+    eos = NULL
+  )
   flush(con)
 
   status_line <- readLines(con, n = 1, warn = FALSE)
@@ -456,8 +470,8 @@ test_that("integration: max body size limit and body_too_large flag", {
       })
 
       serve(
-        port = port, 
-        host = "127.0.0.1", 
+        port = port,
+        host = "127.0.0.1",
         quiet = TRUE,
         max_body_size = 50 # Small limit for testing
       )
@@ -465,14 +479,31 @@ test_that("integration: max body size limit and body_too_large flag", {
     args = list(port, .libPaths(), pkg_path)
   )
 
-  on.exit({ if (p$is_alive()) p$kill() }, add = TRUE)
+  on.exit(
+    {
+      if (p$is_alive()) p$kill()
+    },
+    add = TRUE
+  )
   wait_for_server(port, p)
 
   # 1. Test within limit
-  con1 <- socketConnection(host = "127.0.0.1", port = port, open = "r+", blocking = TRUE)
+  con1 <- socketConnection(
+    host = "127.0.0.1",
+    port = port,
+    open = "r+",
+    blocking = TRUE
+  )
   payload1 <- "12345" # 5 bytes
-  writeChar(sprintf("POST /check-size HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", 
-                    nchar(payload1), payload1), con1, eos = NULL)
+  writeChar(
+    sprintf(
+      "POST /check-size HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s",
+      nchar(payload1),
+      payload1
+    ),
+    con1,
+    eos = NULL
+  )
   flush(con1)
   res1 <- readLines(con1, warn = FALSE)
   close(con1)
@@ -481,11 +512,23 @@ test_that("integration: max body size limit and body_too_large flag", {
   expect_equal(tail(res1, 1), "5")
 
   # 2. Test exceeding limit
-  con2 <- socketConnection(host = "127.0.0.1", port = port, open = "r+", blocking = TRUE)
+  con2 <- socketConnection(
+    host = "127.0.0.1",
+    port = port,
+    open = "r+",
+    blocking = TRUE
+  )
   # 100 bytes is > 50 limit
   payload2 <- paste0(rep("a", 100), collapse = "")
-  writeChar(sprintf("POST /check-size HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", 
-                    nchar(payload2), payload2), con2, eos = NULL)
+  writeChar(
+    sprintf(
+      "POST /check-size HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s",
+      nchar(payload2),
+      payload2
+    ),
+    con2,
+    eos = NULL
+  )
   flush(con2)
   res2 <- readLines(con2, warn = FALSE)
   close(con2)

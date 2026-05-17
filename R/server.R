@@ -8,8 +8,8 @@
 #' @return Invisibly returns TRUE.
 #' @export
 start_server <- function(
-  port = 8080L, 
-  host = "127.0.0.1", 
+  port = 8080L,
+  host = "127.0.0.1",
   num_threads = 50L,
   max_body_size = 8 * 1024 * 1024,
   request_timeout_ms = 30000L

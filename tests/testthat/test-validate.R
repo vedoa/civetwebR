@@ -39,9 +39,29 @@ test_that("request_timeout_ms validation works", {
 })
 
 test_that("serve input aggregator works", {
-  args <- .validate_serve_input(8080, "127.0.0.1", TRUE, NULL, 100, 5, 1024, 5000)
+  args <- .validate_serve_input(
+    8080,
+    "127.0.0.1",
+    TRUE,
+    NULL,
+    100,
+    5,
+    1024,
+    5000
+  )
   expect_equal(args$port, 8080L)
   expect_equal(args$num_threads, 5L)
   expect_equal(args$max_body_size, 1024)
   expect_equal(args$request_timeout_ms, 5000L)
+})
+
+test_that("host IPv6 normalization works", {
+  expect_equal(.validate_host("::1"), "[::1]")
+  expect_equal(.validate_host("[::1]"), "[::1]")
+  expect_error(.validate_host("[invalid]"))
+})
+
+test_that("static validation handles single config", {
+  cfg <- list(dir = tempdir(), prefix = "/test")
+  expect_length(.validate_static(cfg), 1)
 })

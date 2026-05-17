@@ -1,6 +1,5 @@
 # define routes
 group("/api", {
-
   handle("GET", "/hello", function(req) {
     "hello from api"
   })
@@ -16,7 +15,6 @@ group("/api", {
       body = "user created"
     )
   })
-
 })
 
 serve()

@@ -15,7 +15,6 @@ handle("GET", "/", function(req) {
 
 # 3. Demonstrate grouping and structured responses (JSON)
 group("/api/v1", {
-  
   handle("GET", "/status", function(req) {
     list(
       status = 200L,
@@ -23,7 +22,7 @@ group("/api/v1", {
       body = '{"status": "ok", "engine": "CivetWeb", "thread_safe": true}'
     )
   })
-  
+
   handle("POST", "/echo", function(req) {
     # This handler echoes back whatever binary body was sent
     list(
@@ -39,11 +38,17 @@ handle("GET", "/whoami", function(req) {
   # Use the S3 helpers to extract information safely
   ua <- req_header(req, "User-Agent")
   name <- req_query(req, "name")
-  
-  if (is.null(name)) name <- "Anonymous Visitor"
-  
-  sprintf("Hello %s!\n\nYour Request ID is: %d\nYour User-Agent is: %s", 
-          name, req$id, ua)
+
+  if (is.null(name)) {
+    name <- "Anonymous Visitor"
+  }
+
+  sprintf(
+    "Hello %s!\n\nYour Request ID is: %d\nYour User-Agent is: %s",
+    name,
+    req$id,
+    ua
+  )
 })
 
 # 5. Start the server

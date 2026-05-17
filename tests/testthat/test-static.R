@@ -179,7 +179,7 @@ test_that("integration: static end-to-end", {
     add = TRUE
   )
 
-  # wait_for_server is defined in test-integration.R but test_bg helpers 
+  # wait_for_server is defined in test-integration.R but test_bg helpers
   # should be robust. Re-using the reliable port-based check:
   wait_for_server(port, p)
 

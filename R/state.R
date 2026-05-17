@@ -64,6 +64,39 @@
   sub("/+$", "", p)
 }
 
+.html_escape <- function(x) {
+  x <- gsub("&", "&amp;", x, fixed = TRUE)
+  x <- gsub("<", "&lt;", x, fixed = TRUE)
+  x <- gsub(">", "&gt;", x, fixed = TRUE)
+  x <- gsub('"', "&quot;", x, fixed = TRUE)
+  x
+}
+
+.breadcrumb <- function(path) {
+  parts <- strsplit(sub("^/+", "", path), "/", fixed = TRUE)[[1]]
+  if (length(parts) == 1 && parts == "") {
+    return('<a href="/">/</a>')
+  }
+
+  acc <- ""
+  crumbs <- '<a href="/">/</a>'
+  for (i in seq_along(parts)) {
+    p <- parts[i]
+    acc <- paste0(acc, "/", p)
+    sep <- if (i == 1) " " else " / "
+    crumbs <- paste0(
+      crumbs,
+      sep,
+      '<a href="',
+      acc,
+      '/">',
+      .html_escape(p),
+      '</a>'
+    )
+  }
+  crumbs
+}
+
 # -------------------------------------------------------------------------
 # Lifecycle helpers (NEW, used by driver loop)
 # -------------------------------------------------------------------------
@@ -85,4 +118,21 @@
   }
 
   invisible(TRUE)
+}
+
+
+.prefix_match <- function(path, prefix) {
+  if (prefix == "/") {
+    return(TRUE)
+  }
+  if (!startsWith(path, prefix)) {
+    return(FALSE)
+  }
+
+  pfx_len <- nchar(prefix)
+  if (nchar(path) == pfx_len) {
+    return(TRUE)
+  }
+
+  substr(path, pfx_len + 1L, pfx_len + 1L) == "/"
 }
