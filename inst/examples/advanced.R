@@ -1,49 +1,52 @@
-# ---- HANDLERS ----
+# This example demonstrates the core features of civetwebR:
+# - Path routing and groups
+# - Custom headers and status codes
+# - Request object inspection using S3 helpers
 
-# Simple GET
-handle("GET", "/hello", function(req) {
-  "hello world"
+library(civetwebR)
+
+# 1. Clean start: remove any handlers registered in the current session
+clear_handlers()
+
+# 2. A basic root handler returning plain text
+handle("GET", "/", function(req) {
+  "Welcome to the civetwebR example server! Try visiting /whoami?name=RUser"
 })
 
-# GET with query params
-handle("GET", "/greet", function(req) {
-  name <- req$query_params$name %||% "stranger"
-  paste("hello", name)
+# 3. Demonstrate grouping and structured responses (JSON)
+group("/api/v1", {
+  
+  handle("GET", "/status", function(req) {
+    list(
+      status = 200L,
+      headers = list("Content-Type" = "application/json"),
+      body = '{"status": "ok", "engine": "CivetWeb", "thread_safe": true}'
+    )
+  })
+  
+  handle("POST", "/echo", function(req) {
+    # This handler echoes back whatever binary body was sent
+    list(
+      status = 201L,
+      headers = list("X-Echo-Type" = "Binary"),
+      body = req$body
+    )
+  })
 })
 
-# POST with body + headers
-handle("POST", "/echo", function(req) {
-  body <- rawToChar(req$body)
-  ct   <- req$headers[["Content-Type"]] %||% "unknown"
-  paste("content-type:", ct, "| body:", body)
+# 4. Demonstrate S3 helpers for headers and query parameters
+handle("GET", "/whoami", function(req) {
+  # Use the S3 helpers to extract information safely
+  ua <- req_header(req, "User-Agent")
+  name <- req_query(req, "name")
+  
+  if (is.null(name)) name <- "Anonymous Visitor"
+  
+  sprintf("Hello %s!\n\nYour Request ID is: %d\nYour User-Agent is: %s", 
+          name, req$id, ua)
 })
 
-# Combined example (everything)
-handle("POST", "/all", function(req) {
-  paste(
-    "query:", req$query_params$a %||% "",
-    "| header:", req$headers[["X-Test"]] %||% "",
-    "| body:", rawToChar(req$body),
-    sep = " "
-  )
-})
-
-# ---- START SERVER ----
-serve()
-
-
-# GET
-# curl "http://127.0.0.1:8080/hello"
-
-# query params
-# curl "http://127.0.0.1:8080/greet?name=tom"
-
-# POST body + headers
-# curl -X POST http://127.0.0.1:8080/echo \
-#   -H "Content-Type: text/plain" \
-#   -d "hello server"
-
-# everything
-# curl -X POST "http://127.0.0.1:8080/all?a=1" \
-#   -H "X-Test: ok" \
-#   -d "data"
+# 5. Start the server
+# We use a 10ms timeout for high responsiveness during development
+message("Server starting at http://127.0.0.1:8080")
+serve(port = 8080, host = "127.0.0.1", timeout_ms = 10L)

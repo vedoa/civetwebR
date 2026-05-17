@@ -17,6 +17,14 @@
   .Call(civetweb_send_response, as.integer(id), res, PACKAGE = "civetwebR")
 }
 
+#' Send a WebSocket message
+#' @param id Connection ID.
+#' @param data Character string or raw vector.
+#' @export
+ws_send <- function(id, data) {
+  .Call(civetweb_ws_send, as.integer(id), data, PACKAGE = "civetwebR")
+}
+
 #' Run the CivetWeb driver loop (single-thread safe mode)
 #'
 #' This loop pulls requests from C, dispatches in R, and sends responses back.
@@ -45,8 +53,14 @@ run_server <- function(timeout_ms = 100L) {
       next
     }
 
-    res <- .dispatch_request(req$method, req$path, req = req)
-    .send_response(req$id, res)
+    if (req$type == 0L) {
+      # HTTP
+      res <- .dispatch_request(req$method, req$path, req = req)
+      .send_response(req$id, res)
+    } else {
+      # WebSocket events (READY, DATA, CLOSE)
+      .dispatch_ws_event(req)
+    }
   }
 
   invisible(TRUE)

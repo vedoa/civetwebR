@@ -2,14 +2,22 @@
 #'
 #' @param port Integer. Port to listen on.
 #' @param host String. Host to expose to.
+#' @param num_threads Integer. Number of worker threads. Default is 50.
 #' @return Invisibly returns TRUE.
 #' @export
-start_server <- function(port = 8080L, host = "127.0.0.1") {
+start_server <- function(port = 8080L, host = "127.0.0.1", num_threads = 50L) {
   .validate_is_running()
   .validate_port(port)
   .validate_host(host)
+  num_threads <- .validate_num_threads(num_threads)
 
-  ptr <- .Call(civetweb_start_server, port, host, PACKAGE = "civetwebR")
+  ptr <- .Call(
+    civetweb_start_server,
+    port,
+    host,
+    num_threads,
+    PACKAGE = "civetwebR"
+  )
 
   if (is.null(ptr)) {
     stop("failed to start server", call. = FALSE)

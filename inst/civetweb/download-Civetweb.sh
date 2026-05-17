@@ -53,6 +53,10 @@ download \
 "https://raw.githubusercontent.com/civetweb/civetweb/cafd5f8fae3b859b7f8c29feb03ea075c7221497/src/handle_form.inl" \
 "$TARGET_DIR/handle_form.inl"
 
+download \
+"https://raw.githubusercontent.com/civetweb/civetweb/d110e8731c6aa0fcd04504deb449bdb773cfb9da/src/sha1.inl" \
+"$TARGET_DIR/sha1.inl"
+
 # ---- License ----
 
 download \

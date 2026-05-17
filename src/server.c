@@ -44,6 +44,14 @@
 /* ---- limits ---- */
 #define CW_MAX_BODY (8u * 1024u * 1024u) /* 8 MiB */
 
+typedef enum {
+  CW_EVENT_HTTP = 0,
+  CW_EVENT_WS_CONNECT = 1,
+  CW_EVENT_WS_READY = 2,
+  CW_EVENT_WS_DATA = 3,
+  CW_EVENT_WS_CLOSE = 4
+} cw_event_t;
+
 /* request header pair */
 typedef struct cw_hdr {
   char *name;
@@ -51,6 +59,7 @@ typedef struct cw_hdr {
 } cw_hdr_t;
 
 typedef struct cw_request {
+  cw_event_t event_type;
   int id;
   char *method;
   char *path;
@@ -189,6 +198,14 @@ static void enqueue(cw_request_t *r) {
   cw_mutex_unlock(&g_lock);
 }
 
+/* Find a persistent anchor (HTTP or WS_READY) */
+static cw_request_t *find_active(int id) {
+  for (cw_request_t *c = active_head; c; c = c->next) {
+    if (c->id == id) return c;
+  }
+  return NULL;
+}
+
 /* dequeue with timeout
  * returns:
  *   1 => got request (*out set)
@@ -230,20 +247,18 @@ static int dequeue_timeout(cw_request_t **out, int timeout_ms) {
   q_head = r->next;
   if (!q_head) q_tail = NULL;
 
-  r->next = active_head;
-  active_head = r;
+  /* Only keep anchors in the active list */
+  if (r->event_type == CW_EVENT_HTTP || r->event_type == CW_EVENT_WS_READY) {
+    r->next = active_head;
+    active_head = r;
+  } else {
+    r->next = NULL;
+  }
 
   cw_mutex_unlock(&g_lock);
 
   *out = r;
   return 1;
-}
-
-static cw_request_t *find_active(int id) {
-  for (cw_request_t *c = active_head; c; c = c->next) {
-    if (c->id == id) return c;
-  }
-  return NULL;
 }
 
 static void remove_active(cw_request_t *r) {
@@ -461,6 +476,84 @@ static void read_body(cw_request_t *r, struct mg_connection *conn, const struct 
   }
 }
 
+/* WebSocket Handlers (NO R API) */
+static int ws_connect_handler(const struct mg_connection *conn, void *cbdata) {
+  return 0; // Accept all
+}
+
+static void ws_ready_handler(struct mg_connection *conn, void *cbdata) {
+  cw_request_t *r = (cw_request_t *)calloc(1, sizeof(*r));
+  if (!r) return;
+  cw_mutex_init(&r->lock);
+  cw_cond_init(&r->cv);
+
+  cw_mutex_lock(&g_lock);
+  int id = next_id++;
+  r->id = id;
+  r->event_type = CW_EVENT_WS_READY;
+  r->conn = conn;
+  r->path = dup_str(mg_get_request_info(conn)->request_uri);
+
+  /* Persist the ID in the connection so subsequent messages use the same one */
+  mg_set_user_connection_data(conn, r);
+  cw_mutex_unlock(&g_lock);
+
+  enqueue(r);
+  // We don't block here for WS_READY, just notify R
+}
+
+static int ws_data_handler(struct mg_connection *conn, int bits, char *data, size_t len, void *cbdata) {
+  int opcode = bits & 0xf;
+  /* Only handle Text and Binary frames; let CivetWeb handle PING/PONG/CLOSE */
+  if (opcode != MG_WEBSOCKET_OPCODE_TEXT && opcode != MG_WEBSOCKET_OPCODE_BINARY) {
+    return 1;
+  }
+
+  cw_request_t *r = (cw_request_t *)calloc(1, sizeof(*r));
+  if (!r) return 0;
+  cw_mutex_init(&r->lock);
+  cw_cond_init(&r->cv);
+
+  cw_mutex_lock(&g_lock);
+  void *udata = mg_get_user_connection_data(conn);
+  cw_request_t *anchor = (udata) ? (cw_request_t *)udata : NULL;
+  r->id = (anchor && anchor->event_type == CW_EVENT_WS_READY) ? anchor->id : 0;
+  r->event_type = CW_EVENT_WS_DATA;
+  r->conn = NULL; /* This is a transient event, don't store the connection pointer */
+  r->req_body_len = len;
+  r->req_body = (unsigned char *)malloc(len);
+  if (r->req_body) memcpy(r->req_body, data, len);
+  cw_mutex_unlock(&g_lock);
+
+  enqueue(r);
+  return 1; // Keep open
+}
+
+static void ws_close_handler(const struct mg_connection *conn, void *cbdata) {
+  void *udata = mg_get_user_connection_data(conn);
+  cw_request_t *anchor = (udata) ? (cw_request_t *)udata : NULL;
+  int id = (anchor && anchor->event_type == CW_EVENT_WS_READY) ? anchor->id : 0;
+
+  cw_mutex_lock(&g_lock);
+  /* CRITICAL: Nullify the connection pointer in the anchor immediately */
+  if (anchor) anchor->conn = NULL;
+  cw_mutex_unlock(&g_lock);
+
+  cw_request_t *r = (cw_request_t *)calloc(1, sizeof(*r));
+  if (!r) return;
+  cw_mutex_init(&r->lock);
+  cw_cond_init(&r->cv);
+
+  cw_mutex_lock(&g_lock);
+  r->id = id;
+  r->event_type = CW_EVENT_WS_CLOSE;
+  r->conn = NULL; /* This is a transient event, don't store the connection pointer */
+  cw_mutex_unlock(&g_lock);
+
+  enqueue(r);
+  mg_set_user_connection_data((struct mg_connection *)conn, NULL);
+}
+
 /* HTTP handler (NO R API) */
 static int handler(struct mg_connection *conn, void *cbdata) {
   (void)cbdata;
@@ -485,6 +578,7 @@ static int handler(struct mg_connection *conn, void *cbdata) {
     return 1;
   }
   r->id = next_id++;
+  r->event_type = CW_EVENT_HTTP;
   cw_mutex_unlock(&g_lock);
 
   const char *m = (req && req->request_method) ? req->request_method : "GET";
@@ -581,9 +675,12 @@ SEXP civetweb_next_request_timeout(SEXP timeout_ms) {
     return R_NilValue;
   }
 
-  /* Build req list: id, method, path, query, headers, body, body_too_large */
-  SEXP out  = PROTECT(Rf_allocVector(VECSXP, 7));
-  SEXP nms  = PROTECT(Rf_allocVector(STRSXP, 7));
+  cw_event_t type = r->event_type;
+  int id = r->id;
+
+  /* Build req list: id, method, path, query, headers, body, body_too_large, type */
+  SEXP out  = PROTECT(Rf_allocVector(VECSXP, 8));
+  SEXP nms  = PROTECT(Rf_allocVector(STRSXP, 8));
 
   SET_STRING_ELT(nms, 0, Rf_mkChar("id"));
   SET_STRING_ELT(nms, 1, Rf_mkChar("method"));
@@ -592,6 +689,7 @@ SEXP civetweb_next_request_timeout(SEXP timeout_ms) {
   SET_STRING_ELT(nms, 4, Rf_mkChar("headers"));
   SET_STRING_ELT(nms, 5, Rf_mkChar("body"));
   SET_STRING_ELT(nms, 6, Rf_mkChar("body_too_large"));
+  SET_STRING_ELT(nms, 7, Rf_mkChar("type"));
   Rf_setAttrib(out, R_NamesSymbol, nms);
 
   SET_VECTOR_ELT(out, 0, Rf_ScalarInteger(r->id));
@@ -620,9 +718,45 @@ SEXP civetweb_next_request_timeout(SEXP timeout_ms) {
   }
 
   SET_VECTOR_ELT(out, 6, Rf_ScalarLogical(r->req_body_too_large ? 1 : 0));
+  SET_VECTOR_ELT(out, 7, Rf_ScalarInteger((int)r->event_type));
 
   UNPROTECT(4);
+
+  /* WebSocket DATA and CLOSE events are transient; free them now that data is copied to R. */
+  if (type == CW_EVENT_WS_DATA) { /* Transient data frame */
+    free_req(r);
+  } else if (type == CW_EVENT_WS_CLOSE) { /* Connection closed event */
+    /* When a connection closes, find the original READY object (anchor) and clean it up. */
+    cw_mutex_lock(&g_lock);
+    cw_request_t *ready_obj = find_active(id);
+    if (ready_obj) {
+      remove_active(ready_obj);
+      free_req(ready_obj);
+    }
+    cw_mutex_unlock(&g_lock);
+    free_req(r);
+  }
+
   return out;
+}
+
+SEXP civetweb_ws_send(SEXP idS, SEXP dataS) {
+  int id = Rf_asInteger(idS);
+  cw_mutex_lock(&g_lock);
+  cw_request_t *r = find_active(id);
+  cw_mutex_unlock(&g_lock);
+
+  /* Check if anchor exists AND connection is still live */
+  if (!r || r->event_type != CW_EVENT_WS_READY || !r->conn) {
+    return Rf_ScalarLogical(0);
+  }
+
+  if (TYPEOF(dataS) == RAWSXP) {
+    return Rf_ScalarLogical(mg_websocket_write(r->conn, MG_WEBSOCKET_OPCODE_BINARY, (const char *)RAW(dataS), XLENGTH(dataS)) > 0);
+  } else {
+    const char *txt = CHAR(STRING_ELT(dataS, 0));
+    return Rf_ScalarLogical(mg_websocket_write(r->conn, MG_WEBSOCKET_OPCODE_TEXT, txt, strlen(txt)) > 0);
+  }
 }
 
 SEXP civetweb_send_response(SEXP idS, SEXP res) {
@@ -651,7 +785,7 @@ SEXP civetweb_send_response(SEXP idS, SEXP res) {
 
 /* SERVER */
 
-SEXP civetweb_start_server(SEXP portS, SEXP hostS) {
+SEXP civetweb_start_server(SEXP portS, SEXP hostS, SEXP threadsS) {
   init_once();
 
   if (!Rf_isInteger(portS) || LENGTH(portS) < 1) {
@@ -660,16 +794,23 @@ SEXP civetweb_start_server(SEXP portS, SEXP hostS) {
   if (!Rf_isString(hostS) || LENGTH(hostS) < 1) {
     Rf_error("host must be character(1)");
   }
+  if (!Rf_isInteger(threadsS) || LENGTH(threadsS) < 1) {
+    Rf_error("num_threads must be an integer");
+  }
 
   int port = INTEGER(portS)[0];
   const char *host = CHAR(STRING_ELT(hostS, 0));
+  int threads = INTEGER(threadsS)[0];
 
   char addr[128];
   snprintf(addr, sizeof(addr), "%s:%d", host, port);
 
+  char threads_buf[16];
+  snprintf(threads_buf, sizeof(threads_buf), "%d", threads);
+
   const char *opts[] = {
     "listening_ports", addr,
-    "num_threads", "1",
+    "num_threads", threads_buf,
     NULL
   };
 
@@ -686,6 +827,7 @@ SEXP civetweb_start_server(SEXP portS, SEXP hostS) {
   }
 
   mg_set_request_handler(ctx, "/", handler, NULL);
+  mg_set_websocket_handler(ctx, "/ws", ws_connect_handler, ws_ready_handler, ws_data_handler, ws_close_handler, NULL);
 
   return R_MakeExternalPtr(ctx, R_NilValue, R_NilValue);
 }
@@ -722,7 +864,7 @@ SEXP civetweb_stop_server(SEXP xptr) {
   }
 
   for (cw_request_t *r = active_head; r; r = r->next) {
-    cw_mutex_lock(&r->lock);
+    if (r->event_type == CW_EVENT_HTTP) cw_mutex_lock(&r->lock);
     if (!r->responded) {
       r->status = 503;
       free(r->content_type);
@@ -733,7 +875,7 @@ SEXP civetweb_stop_server(SEXP xptr) {
       r->responded = 1;
       cw_cond_signal(&r->cv);
     }
-    cw_mutex_unlock(&r->lock);
+    if (r->event_type == CW_EVENT_HTTP) cw_mutex_unlock(&r->lock);
   }
 
   cw_mutex_unlock(&g_lock);

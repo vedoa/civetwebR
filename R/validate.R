@@ -172,15 +172,36 @@
   timeout_ms
 }
 
+.validate_num_threads <- function(num_threads) {
+  if (
+    !is.numeric(num_threads) || length(num_threads) != 1L || is.na(num_threads)
+  ) {
+    stop("num_threads must be a single number", call. = FALSE)
+  }
+  num_threads <- as.integer(num_threads)
+  if (num_threads < 1L) {
+    stop("num_threads must be at least 1", call. = FALSE)
+  }
+  num_threads
+}
+
 #' @rdname serve
 #' @keywords internal
-.validate_serve_input <- function(port, host, quiet, log, timeout_ms) {
+.validate_serve_input <- function(
+  port,
+  host,
+  quiet,
+  log,
+  timeout_ms,
+  num_threads
+) {
   list(
     port = .validate_port(port),
     host = .validate_host(host),
     quiet = .validate_quiet(quiet),
     log = .validate_log(log),
-    timeout_ms = .validate_timeout_ms(timeout_ms)
+    timeout_ms = .validate_timeout_ms(timeout_ms),
+    num_threads = .validate_num_threads(num_threads)
   )
 }
 

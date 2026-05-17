@@ -178,5 +178,37 @@ clear_handlers <- function() {
   if (length(nms)) {
     rm(list = nms, envir = env)
   }
+  .state$ws_handlers <- list(open = NULL, message = NULL, close = NULL)
   invisible(TRUE)
+}
+
+#' Register WebSocket event handlers
+#'
+#' @param event Character string: "open", "message", or "close".
+#' @param fun Function taking a `cw_request` object.
+#' @export
+on_ws <- function(event, fun) {
+  event <- match.arg(event, c("open", "message", "close"))
+  if (!is.function(fun) && !is.null(fun)) {
+    stop("fun must be a function")
+  }
+  .state$ws_handlers[[event]] <- fun
+}
+
+.dispatch_ws_event <- function(req) {
+  # type mapping from server.c: 2=READY (open), 3=DATA (message), 4=CLOSE
+  handler_name <- switch(
+    as.character(req$type),
+    "2" = "open",
+    "3" = "message",
+    "4" = "close",
+    NULL
+  )
+
+  if (!is.null(handler_name)) {
+    fun <- .state$ws_handlers[[handler_name]]
+    if (is.function(fun)) {
+      try(fun(req), silent = FALSE)
+    }
+  }
 }

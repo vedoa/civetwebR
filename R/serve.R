@@ -6,6 +6,7 @@
 #' @param log Function or NULL. Optional request logger.
 #' @param static NULL or list. Static serving configuration(s).
 #' @param timeout_ms Polling timeout in milliseconds. Default is 100ms.
+#' @param num_threads Integer. Number of worker threads. Default is 50.
 #'
 #' @rdname serve
 #' @export
@@ -15,15 +16,17 @@ serve <- function(
   quiet = FALSE,
   log = NULL,
   static = NULL,
-  timeout_ms = 100L
+  timeout_ms = 100L,
+  num_threads = 50L
 ) {
-  args <- .validate_serve_input(port, host, quiet, log, timeout_ms)
+  args <- .validate_serve_input(port, host, quiet, log, timeout_ms, num_threads)
 
   port <- args$port
   host <- args$host
   quiet <- args$quiet
   log <- args$log
   timeout_ms <- args$timeout_ms
+  num_threads <- args$num_threads
 
   static_cfg <- .validate_static(static)
 
@@ -77,7 +80,7 @@ serve <- function(
     stop("Server loop is already running", call. = FALSE)
   }
 
-  start_server(port, host)
+  start_server(port, host, num_threads)
 
   if (!quiet) {
     cat(sprintf("Server running on http://%s:%d\n", host, port))
@@ -141,6 +144,11 @@ serve <- function(
     }
 
     if (is.null(req)) {
+      next
+    }
+
+    if (req$type != 0L) {
+      .dispatch_ws_event(req)
       next
     }
 
