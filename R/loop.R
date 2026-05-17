@@ -1,11 +1,16 @@
 # Internal native wrappers (native symbols; required with R_forceSymbols(TRUE))
 
 .next_request <- function(timeout_ms = 100L) {
-  .Call(
+  req <- .Call(
     civetweb_next_request_timeout,
     as.integer(timeout_ms),
     PACKAGE = "civetwebR"
   )
+
+  if (is.list(req) && !isTRUE(req$interrupted)) {
+    class(req) <- "cw_request"
+  }
+  req
 }
 
 .send_response <- function(id, res) {

@@ -123,11 +123,11 @@ handle <- function(method, path, fun) {
 #' @param x Object to normalize.
 .normalize_response <- function(x) {
   if (is.character(x) && length(x) == 1L) {
-    return(list(
+    x <- list(
       status = 200L,
       headers = list("Content-Type" = "text/plain"),
       body = x
-    ))
+    )
   }
 
   if (!is.list(x)) {
@@ -150,6 +150,7 @@ handle <- function(method, path, fun) {
     x$body <- ""
   }
 
+  class(x) <- "cw_response"
   x
 }
 
