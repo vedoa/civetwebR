@@ -155,14 +155,32 @@
   log
 }
 
+
+.validate_timeout_ms <- function(timeout_ms) {
+  if (
+    !is.numeric(timeout_ms) || length(timeout_ms) != 1L || is.na(timeout_ms)
+  ) {
+    stop("timeout_ms must be a single number", call. = FALSE)
+  }
+
+  timeout_ms <- as.integer(timeout_ms)
+
+  if (timeout_ms < 0L) {
+    stop("timeout_ms must be non-negative", call. = FALSE)
+  }
+
+  timeout_ms
+}
+
 #' @rdname serve
 #' @keywords internal
-.validate_serve_input <- function(port, host, quiet, log) {
+.validate_serve_input <- function(port, host, quiet, log, timeout_ms) {
   list(
     port = .validate_port(port),
     host = .validate_host(host),
     quiet = .validate_quiet(quiet),
-    log = .validate_log(log)
+    log = .validate_log(log),
+    timeout_ms = .validate_timeout_ms(timeout_ms)
   )
 }
 

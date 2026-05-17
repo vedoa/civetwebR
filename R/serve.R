@@ -5,6 +5,7 @@
 #' @param quiet Logical. Suppress startup message.
 #' @param log Function or NULL. Optional request logger.
 #' @param static NULL or list. Static serving configuration(s).
+#' @param timeout_ms Polling timeout in milliseconds. Default is 100ms.
 #'
 #' @rdname serve
 #' @export
@@ -13,14 +14,16 @@ serve <- function(
   host = "127.0.0.1",
   quiet = FALSE,
   log = NULL,
-  static = NULL
+  static = NULL,
+  timeout_ms = 100L
 ) {
-  args <- .validate_serve_input(port, host, quiet, log)
+  args <- .validate_serve_input(port, host, quiet, log, timeout_ms)
 
   port <- args$port
   host <- args$host
   quiet <- args$quiet
   log <- args$log
+  timeout_ms <- args$timeout_ms
 
   static_cfg <- .validate_static(static)
 
@@ -145,7 +148,7 @@ serve <- function(
       break
     }
 
-    req <- .next_request(100L)
+    req <- .next_request(timeout_ms)
 
     if (is.list(req) && isTRUE(req$interrupted)) {
       stop_server()

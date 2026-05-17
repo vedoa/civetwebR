@@ -17,9 +17,10 @@
 #' This loop pulls requests from C, dispatches in R, and sends responses back.
 #' It runs until interrupted.
 #'
+#' @param timeout_ms Polling timeout in milliseconds. Default is 100ms.
 #' @return Invisibly returns TRUE when the loop exits.
 #' @export
-run_server <- function() {
+run_server <- function(timeout_ms = 100L) {
   if (!.is_running()) {
     stop("Server is not running", call. = FALSE)
   }
@@ -27,11 +28,13 @@ run_server <- function() {
     stop("Server loop is already running", call. = FALSE)
   }
 
+  timeout_ms <- .validate_timeout_ms(timeout_ms)
+
   .set_loop_running(TRUE)
   on.exit(.set_loop_running(FALSE), add = TRUE)
 
   repeat {
-    req <- .next_request(100L) # wakes every 100ms
+    req <- .next_request(timeout_ms)
 
     if (is.null(req)) {
       next
