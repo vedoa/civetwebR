@@ -387,3 +387,111 @@ test_that("integration: custom headers and status codes work", {
   # Verify Default Content-Type fallback (added in C if not provided by R)
   expect_true(any(grepl("Content-Type: text/plain", lines)))
 })
+
+test_that("integration: custom status text override works", {
+  skip_on_cran()
+  skip_if_not_installed("callr")
+
+  port <- sample(10000:20000, 1)
+  pkg_path <- normalizePath(test_path("../.."), mustWork = TRUE)
+
+  p <- callr::r_bg(
+    function(port, lib_paths, pkg_path) {
+      .libPaths(lib_paths)
+      if (file.exists(file.path(pkg_path, "DESCRIPTION"))) {
+        pkgload::load_all(pkg_path)
+      } else {
+        library(civetwebR)
+      }
+
+      handle("GET", "/teapot", function(req) {
+        list(
+          status = 418L,
+          status_text = "I am a coffee pot",
+          body = "short and stout"
+        )
+      })
+
+      serve(port = port, host = "127.0.0.1", quiet = TRUE)
+    },
+    args = list(port, .libPaths(), pkg_path)
+  )
+
+  on.exit({ if (p$is_alive()) p$kill() }, add = TRUE)
+  wait_for_server(port, p)
+
+  con <- socketConnection(host = "127.0.0.1", port = port, open = "r+", blocking = TRUE)
+  on.exit(close(con), add = TRUE)
+
+  writeChar("GET /teapot HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n", con, eos = NULL)
+  flush(con)
+
+  status_line <- readLines(con, n = 1, warn = FALSE)
+  expect_match(status_line, "418 I am a coffee pot", fixed = TRUE)
+})
+
+test_that("integration: max body size limit and body_too_large flag", {
+  skip_on_cran()
+  skip_if_not_installed("callr")
+
+  port <- sample(10000:20000, 1)
+  pkg_path <- normalizePath(test_path("../.."), mustWork = TRUE)
+
+  p <- callr::r_bg(
+    function(port, lib_paths, pkg_path) {
+      .libPaths(lib_paths)
+      if (file.exists(file.path(pkg_path, "DESCRIPTION"))) {
+        pkgload::load_all(pkg_path)
+      } else {
+        library(civetwebR)
+      }
+
+      handle("POST", "/check-size", function(req) {
+        # Return the status of the flag and the actual length received
+        list(
+          status = 200L,
+          headers = list("X-Body-Large" = as.character(req$body_too_large)),
+          body = as.character(length(req$body))
+        )
+      })
+
+      serve(
+        port = port, 
+        host = "127.0.0.1", 
+        quiet = TRUE,
+        max_body_size = 50 # Small limit for testing
+      )
+    },
+    args = list(port, .libPaths(), pkg_path)
+  )
+
+  on.exit({ if (p$is_alive()) p$kill() }, add = TRUE)
+  wait_for_server(port, p)
+
+  # 1. Test within limit
+  con1 <- socketConnection(host = "127.0.0.1", port = port, open = "r+", blocking = TRUE)
+  payload1 <- "12345" # 5 bytes
+  writeChar(sprintf("POST /check-size HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", 
+                    nchar(payload1), payload1), con1, eos = NULL)
+  flush(con1)
+  res1 <- readLines(con1, warn = FALSE)
+  close(con1)
+
+  expect_true(any(grepl("X-Body-Large: FALSE", res1)))
+  expect_equal(tail(res1, 1), "5")
+
+  # 2. Test exceeding limit
+  con2 <- socketConnection(host = "127.0.0.1", port = port, open = "r+", blocking = TRUE)
+  # 100 bytes is > 50 limit
+  payload2 <- paste0(rep("a", 100), collapse = "")
+  writeChar(sprintf("POST /check-size HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", 
+                    nchar(payload2), payload2), con2, eos = NULL)
+  flush(con2)
+  res2 <- readLines(con2, warn = FALSE)
+  close(con2)
+
+  # Flag should be TRUE
+  expect_true(any(grepl("X-Body-Large: TRUE", res2)))
+  # Length should be truncated to max_body_size (50)
+  expect_equal(tail(res2, 1), "50")
+})

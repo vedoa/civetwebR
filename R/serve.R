@@ -7,6 +7,8 @@
 #' @param static NULL or list. Static serving configuration(s).
 #' @param timeout_ms Polling timeout in milliseconds. Default is 100ms.
 #' @param num_threads Integer. Number of worker threads. Default is 50.
+#' @param max_body_size Number. Maximum request body size in bytes. Default is 8MiB.
+#' @param request_timeout_ms Integer. Socket receive timeout. Default is 30s.
 #'
 #' @rdname serve
 #' @export
@@ -17,9 +19,11 @@ serve <- function(
   log = NULL,
   static = NULL,
   timeout_ms = 100L,
-  num_threads = 50L
+  num_threads = 50L,
+  max_body_size = 8 * 1024 * 1024,
+  request_timeout_ms = 30000L
 ) {
-  args <- .validate_serve_input(port, host, quiet, log, timeout_ms, num_threads)
+  args <- .validate_serve_input(port, host, quiet, log, timeout_ms, num_threads, max_body_size, request_timeout_ms)
 
   port <- args$port
   host <- args$host
@@ -27,6 +31,8 @@ serve <- function(
   log <- args$log
   timeout_ms <- args$timeout_ms
   num_threads <- args$num_threads
+  max_body_size <- args$max_body_size
+  request_timeout_ms <- args$request_timeout_ms
 
   static_cfg <- .validate_static(static)
 
@@ -80,7 +86,7 @@ serve <- function(
     stop("Server loop is already running", call. = FALSE)
   }
 
-  start_server(port, host, num_threads)
+  start_server(port, host, num_threads, max_body_size, request_timeout_ms)
 
   if (!quiet) {
     cat(sprintf("Server running on http://%s:%d\n", host, port))

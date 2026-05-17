@@ -22,7 +22,7 @@ broadcast <- function(msg) {
 on_ws("open", function(req) {
   client_id <- as.character(req$id)
   active_clients[[client_id]] <- TRUE
-  
+
   message(sprintf("Client %s connected", client_id))
   broadcast(sprintf("System: User %s joined the room", client_id))
 })
@@ -30,9 +30,9 @@ on_ws("open", function(req) {
 on_ws("message", function(req) {
   msg <- rawToChar(req$body)
   client_id <- req$id
-  
+
   message(sprintf("Message from %s: %s", client_id, msg))
-  
+
   # Echo back to the sender
   ws_send(client_id, paste("You said:", msg))
 })
@@ -42,14 +42,17 @@ on_ws("close", function(req) {
   if (exists(client_id, envir = active_clients)) {
     rm(list = client_id, envir = active_clients)
   }
-  
+
   message(sprintf("Client %s disconnected", client_id))
   broadcast(sprintf("System: User %s left the room", client_id))
 })
 
 # Serve a simple HTML page that connects to the websocket
 handle("GET", "/", function(req) {
-  list(status = 200L, headers = list("Content-Type" = "text/html"), body = '
+  list(
+    status = 200L,
+    headers = list("Content-Type" = "text/html"),
+    body = '
     <style>
       body { font-family: sans-serif; padding: 20px; }
       #log { border:1px solid #ccc; height: 300px; overflow: auto; background: #f9f9f9; padding: 10px; margin-bottom: 10px; }
@@ -79,7 +82,8 @@ handle("GET", "/", function(req) {
         status.innerHTML = "<b style=\'color:orange\'>Error</b>";
       };
     </script>
-  ')
+  '
+  )
 })
 
 message("Starting WebSocket demo at http://127.0.0.1:8080")

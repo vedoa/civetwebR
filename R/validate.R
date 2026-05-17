@@ -185,6 +185,35 @@
   num_threads
 }
 
+.validate_max_body_size <- function(max_body_size) {
+  if (
+    !is.numeric(max_body_size) ||
+      length(max_body_size) != 1L ||
+      is.na(max_body_size)
+  ) {
+    stop("max_body_size must be a single number", call. = FALSE)
+  }
+  if (max_body_size < 0) {
+    stop("max_body_size must be non-negative", call. = FALSE)
+  }
+  max_body_size
+}
+
+.validate_request_timeout_ms <- function(request_timeout_ms) {
+  if (
+    !is.numeric(request_timeout_ms) ||
+      length(request_timeout_ms) != 1L ||
+      is.na(request_timeout_ms)
+  ) {
+    stop("request_timeout_ms must be a single number", call. = FALSE)
+  }
+  request_timeout_ms <- as.integer(request_timeout_ms)
+  if (request_timeout_ms < 0L) {
+    stop("request_timeout_ms must be non-negative", call. = FALSE)
+  }
+  request_timeout_ms
+}
+
 #' @rdname serve
 #' @keywords internal
 .validate_serve_input <- function(
@@ -193,7 +222,9 @@
   quiet,
   log,
   timeout_ms,
-  num_threads
+  num_threads,
+  max_body_size,
+  request_timeout_ms
 ) {
   list(
     port = .validate_port(port),
@@ -201,7 +232,9 @@
     quiet = .validate_quiet(quiet),
     log = .validate_log(log),
     timeout_ms = .validate_timeout_ms(timeout_ms),
-    num_threads = .validate_num_threads(num_threads)
+    num_threads = .validate_num_threads(num_threads),
+    max_body_size = .validate_max_body_size(max_body_size),
+    request_timeout_ms = .validate_request_timeout_ms(request_timeout_ms)
   )
 }
 

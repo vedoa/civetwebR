@@ -42,7 +42,7 @@
 #endif
 
 /* ---- limits ---- */
-#define CW_MAX_BODY (8u * 1024u * 1024u) /* 8 MiB */
+static size_t g_max_body_size = 8u * 1024u * 1024u; /* Default 8 MiB */
 
 typedef enum {
   CW_EVENT_HTTP = 0,
@@ -76,6 +76,7 @@ typedef struct cw_request {
 
   /* response */
   int status;
+  char *status_text;
   char *content_type;
   cw_hdr_t *res_headers;
   int num_res_headers;
@@ -145,6 +146,7 @@ static void free_req(cw_request_t *r) {
   free(r->req_body);
 
   /* response */
+  free(r->status_text);
   free(r->content_type);
   free(r->body);
 
@@ -276,6 +278,9 @@ static void remove_active(cw_request_t *r) {
 static void apply_response_from_R(cw_request_t *r, SEXP res) {
   r->status = 200;
 
+  free(r->status_text);
+  r->status_text = NULL;
+
   free(r->content_type);
   r->content_type = dup_str("text/plain");
 
@@ -312,6 +317,10 @@ static void apply_response_from_R(cw_request_t *r, SEXP res) {
     if (strcmp(n, "status") == 0) {
       int sc = Rf_asInteger(VECTOR_ELT(res, i));
       r->status = (sc == NA_INTEGER) ? 500 : sc;
+    } else if (strcmp(n, "status_text") == 0) {
+      SEXP st = VECTOR_ELT(res, i);
+      if (TYPEOF(st) == STRSXP && LENGTH(st) >= 1 && STRING_ELT(st, 0) != NA_STRING)
+        r->status_text = dup_str(CHAR(STRING_ELT(st, 0)));
     } else if (strcmp(n, "body") == 0) {
       SEXP b = VECTOR_ELT(res, i);
 
@@ -404,7 +413,7 @@ static void read_body(cw_request_t *r, struct mg_connection *conn, const struct 
   if (cl == 0) return;
 
   /* allocate up to max body, read & discard rest if larger */
-  size_t maxb = (size_t)CW_MAX_BODY;
+  size_t maxb = g_max_body_size;
 
   unsigned char *buf = NULL;
   size_t cap = 0;
@@ -609,18 +618,28 @@ static int handler(struct mg_connection *conn, void *cbdata) {
   }
   cw_mutex_unlock(&r->lock);
 
-  mg_response_header_start(conn, r->status);
+  if (r->status_text) {
+    /* Manual status line construction for custom status text */
+    mg_printf(conn, "HTTP/1.1 %d %s\r\n", r->status, r->status_text);
+    /* Note: Since we skip mg_response_header_start, we must use mg_printf for headers too
+       to keep the CivetWeb state machine consistent. */
+  } else {
+    mg_response_header_start(conn, r->status);
+  }
   
   if (r->body_len > 0) {
     char clen_buf[64];
     snprintf(clen_buf, sizeof(clen_buf), "%lu", (unsigned long)r->body_len);
-    mg_response_header_add(conn, "Content-Length", clen_buf, -1);
+    if (r->status_text) mg_printf(conn, "Content-Length: %s\r\n", clen_buf);
+    else mg_response_header_add(conn, "Content-Length", clen_buf, -1);
   }
 
   int ct_sent = 0;
   if (r->res_headers) {
     for (int i = 0; i < r->num_res_headers; i++) {
-      mg_response_header_add(conn, r->res_headers[i].name, r->res_headers[i].value, -1);
+      if (r->status_text) mg_printf(conn, "%s: %s\r\n", r->res_headers[i].name, r->res_headers[i].value);
+      else mg_response_header_add(conn, r->res_headers[i].name, r->res_headers[i].value, -1);
+
       if (strcmp(r->res_headers[i].name, "Content-Type") == 0) {
         ct_sent = 1;
       }
@@ -628,9 +647,13 @@ static int handler(struct mg_connection *conn, void *cbdata) {
   }
 
   if (!ct_sent) {
-    mg_response_header_add(conn, "Content-Type", r->content_type ? r->content_type : "text/plain", -1);
+    const char *ct = r->content_type ? r->content_type : "text/plain";
+    if (r->status_text) mg_printf(conn, "Content-Type: %s\r\n", ct);
+    else mg_response_header_add(conn, "Content-Type", ct, -1);
   }
-  mg_response_header_send(conn);
+  
+  if (r->status_text) mg_printf(conn, "\r\n");
+  else mg_response_header_send(conn);
 
   if (r->body_len && r->body) {
     mg_write(conn, r->body, r->body_len);
@@ -785,7 +808,7 @@ SEXP civetweb_send_response(SEXP idS, SEXP res) {
 
 /* SERVER */
 
-SEXP civetweb_start_server(SEXP portS, SEXP hostS, SEXP threadsS) {
+SEXP civetweb_start_server(SEXP portS, SEXP hostS, SEXP threadsS, SEXP max_bodyS, SEXP timeoutS) {
   init_once();
 
   if (!Rf_isInteger(portS) || LENGTH(portS) < 1) {
@@ -797,10 +820,18 @@ SEXP civetweb_start_server(SEXP portS, SEXP hostS, SEXP threadsS) {
   if (!Rf_isInteger(threadsS) || LENGTH(threadsS) < 1) {
     Rf_error("num_threads must be an integer");
   }
+  if (!Rf_isReal(max_bodyS) || LENGTH(max_bodyS) < 1) {
+    Rf_error("max_body_size must be a number");
+  }
+  if (!Rf_isInteger(timeoutS) || LENGTH(timeoutS) < 1) {
+    Rf_error("request_timeout_ms must be an integer");
+  }
 
   int port = INTEGER(portS)[0];
   const char *host = CHAR(STRING_ELT(hostS, 0));
   int threads = INTEGER(threadsS)[0];
+  g_max_body_size = (size_t)REAL(max_bodyS)[0];
+  int timeout = INTEGER(timeoutS)[0];
 
   char addr[128];
   snprintf(addr, sizeof(addr), "%s:%d", host, port);
@@ -808,9 +839,13 @@ SEXP civetweb_start_server(SEXP portS, SEXP hostS, SEXP threadsS) {
   char threads_buf[16];
   snprintf(threads_buf, sizeof(threads_buf), "%d", threads);
 
+  char timeout_buf[16];
+  snprintf(timeout_buf, sizeof(timeout_buf), "%d", timeout);
+
   const char *opts[] = {
     "listening_ports", addr,
     "num_threads", threads_buf,
+    "request_timeout_ms", timeout_buf,
     NULL
   };
 
