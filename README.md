@@ -1,6 +1,6 @@
 # civetwebR
 
-An embedded, high-performance HTTP server for R based on the [CivetWeb](https://github.com/civetweb/civetweb) C library.
+An embedded, performance HTTP server for R based on the [CivetWeb](https://github.com/civetweb/civetweb) C library.
 
 ## Key Features
 
