@@ -329,6 +329,7 @@ static void apply_response_from_R(cw_request_t *r, SEXP res) {
       if (TYPEOF(h) != VECSXP) continue;
 
       SEXP hn = Rf_getAttrib(h, R_NamesSymbol);
+      if (hn == R_NilValue) continue;
       if (TYPEOF(hn) != STRSXP || LENGTH(hn) != LENGTH(h)) continue;
 
       int nh = LENGTH(h);
@@ -515,10 +516,13 @@ static int handler(struct mg_connection *conn, void *cbdata) {
   cw_mutex_unlock(&r->lock);
 
   mg_response_header_start(conn, r->status);
-  char clen_buf[64];
-  snprintf(clen_buf, sizeof(clen_buf), "%lu", (unsigned long)r->body_len);
-  mg_response_header_add(conn, "Content-Length", clen_buf, -1);
   
+  if (r->body_len > 0) {
+    char clen_buf[64];
+    snprintf(clen_buf, sizeof(clen_buf), "%lu", (unsigned long)r->body_len);
+    mg_response_header_add(conn, "Content-Length", clen_buf, -1);
+  }
+
   int ct_sent = 0;
   if (r->res_headers) {
     for (int i = 0; i < r->num_res_headers; i++) {

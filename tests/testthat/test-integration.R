@@ -339,16 +339,29 @@ test_that("integration: custom headers and status codes work", {
 
   wait_for_server(port, p)
 
-  # Manually fetch via socket to see raw HTTP headers
-  # standard R url() helper hides headers and status lines
-  con <- socketConnection(host = "127.0.0.1", port = port, open = "w+b")
+  # Use r+ to allow both read and write
+  con <- socketConnection(
+    host = "127.0.0.1",
+    port = port,
+    open = "r+",
+    blocking = TRUE
+  )
   on.exit(close(con), add = TRUE)
 
-  writeChar("GET /custom HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n", con, eos = NULL)
+  writeChar(
+    "GET /custom HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    con,
+    eos = NULL
+  )
+  flush(con)
+
+  # Read raw response
   lines <- readLines(con, warn = FALSE)
 
   # Verify Status Code (201 Created)
-  expect_true(any(grepl("HTTP/1.1 201", lines)))
+  # Some CivetWeb versions might use HTTP/1.0 if not explicitly upgraded
+  expect_true(any(grepl("HTTP/1\\.[01] 201", lines)))
+
   # Verify Custom Header propagation
   expect_true(any(grepl("X-Test-Header: civetwebR", lines)))
   # Verify Default Content-Type fallback (added in C if not provided by R)
