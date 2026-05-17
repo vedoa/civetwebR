@@ -300,3 +300,57 @@ test_that("integration: static overrides routing when overlapping", {
 
   expect_match(GET("/api/hello"), "STATIC", fixed = TRUE)
 })
+
+test_that("integration: custom headers and status codes work", {
+  skip_on_cran()
+  skip_if_not_installed("callr")
+  skip_if_not_installed("pkgload")
+
+  port <- sample(10000:20000, 1)
+  pkg_path <- normalizePath(testthat::test_path("../.."), mustWork = TRUE)
+
+  p <- callr::r_bg(
+    function(pkg_path, port) {
+      pkgload::load_all(pkg_path)
+
+      handle("GET", "/custom", function(req) {
+        list(
+          status = 201L,
+          headers = list("X-Test-Header" = "civetwebR"),
+          body = "status-201"
+        )
+      })
+
+      serve(
+        port = port,
+        host = "127.0.0.1",
+        quiet = TRUE
+      )
+    },
+    args = list(pkg_path, port)
+  )
+
+  on.exit(
+    {
+      if (p$is_alive()) p$kill()
+    },
+    add = TRUE
+  )
+
+  wait_for_server(port, p)
+
+  # Manually fetch via socket to see raw HTTP headers
+  # standard R url() helper hides headers and status lines
+  con <- socketConnection(host = "127.0.0.1", port = port, open = "w+b")
+  on.exit(close(con), add = TRUE)
+
+  writeChar("GET /custom HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n", con, eos = NULL)
+  lines <- readLines(con, warn = FALSE)
+
+  # Verify Status Code (201 Created)
+  expect_true(any(grepl("HTTP/1.1 201", lines)))
+  # Verify Custom Header propagation
+  expect_true(any(grepl("X-Test-Header: civetwebR", lines)))
+  # Verify Default Content-Type fallback (added in C if not provided by R)
+  expect_true(any(grepl("Content-Type: text/plain", lines)))
+})

@@ -9,7 +9,8 @@
 			"extensions": [
 				"REditorSupport.r", //R support for VS code
 				"streetsidesoftware.code-spell-checker", //code spell checking
-				"Posit.air-vscode" //formatter
+				"Posit.air-vscode", //formatter
+				"google.geminicodeassist" // google AI assistant
 			]
 		}
 	}

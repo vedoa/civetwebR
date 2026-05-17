@@ -37,7 +37,7 @@ run_server <- function() {
       next
     }
 
-    res <- .dispatch_request(req$method, req$path)
+    res <- .dispatch_request(req$method, req$path, req = req)
     .send_response(req$id, res)
   }
 

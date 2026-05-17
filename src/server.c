@@ -68,6 +68,8 @@ typedef struct cw_request {
   /* response */
   int status;
   char *content_type;
+  cw_hdr_t *res_headers;
+  int num_res_headers;
   unsigned char *body;
   size_t body_len;
 
@@ -121,6 +123,14 @@ static void free_req(cw_request_t *r) {
       free(r->headers[i].value);
     }
     free(r->headers);
+  }
+
+  if (r->res_headers) {
+    for (int i = 0; i < r->num_res_headers; i++) {
+      free(r->res_headers[i].name);
+      free(r->res_headers[i].value);
+    }
+    free(r->res_headers);
   }
 
   free(r->req_body);
@@ -258,6 +268,16 @@ static void apply_response_from_R(cw_request_t *r, SEXP res) {
   r->body = NULL;
   r->body_len = 0;
 
+  if (r->res_headers) {
+    for (int i = 0; i < r->num_res_headers; i++) {
+      free(r->res_headers[i].name);
+      free(r->res_headers[i].value);
+    }
+    free(r->res_headers);
+  }
+  r->res_headers = NULL;
+  r->num_res_headers = 0;
+
   if (TYPEOF(res) == STRSXP && LENGTH(res) >= 1) {
     SEXP s0 = STRING_ELT(res, 0);
     const char *s = (s0 == NA_STRING) ? "" : CHAR(s0);
@@ -311,15 +331,22 @@ static void apply_response_from_R(cw_request_t *r, SEXP res) {
       SEXP hn = Rf_getAttrib(h, R_NamesSymbol);
       if (TYPEOF(hn) != STRSXP || LENGTH(hn) != LENGTH(h)) continue;
 
-      for (int j = 0; j < LENGTH(h); j++) {
-        const char *hk = CHAR(STRING_ELT(hn, j));
-        if (strcmp(hk, "Content-Type") != 0) continue;
+      int nh = LENGTH(h);
+      r->res_headers = (cw_hdr_t *)calloc((size_t)nh, sizeof(cw_hdr_t));
+      r->num_res_headers = nh;
 
-        SEXP hv = VECTOR_ELT(h, j);
-        if (TYPEOF(hv) == STRSXP && LENGTH(hv) >= 1 && STRING_ELT(hv, 0) != NA_STRING) {
-          const char *v = CHAR(STRING_ELT(hv, 0));
+      for (int j = 0; j < nh; j++) {
+        const char *hk = CHAR(STRING_ELT(hn, j));
+        SEXP hv_sexp = VECTOR_ELT(h, j);
+        const char *hv = (TYPEOF(hv_sexp) == STRSXP && LENGTH(hv_sexp) > 0) 
+                         ? CHAR(STRING_ELT(hv_sexp, 0)) : "";
+
+        r->res_headers[j].name = dup_str(hk);
+        r->res_headers[j].value = dup_str(hv);
+
+        if (strcmp(hk, "Content-Type") == 0) {
           free(r->content_type);
-          r->content_type = dup_str(v);
+          r->content_type = dup_str(hv);
         }
       }
     }
@@ -487,12 +514,25 @@ static int handler(struct mg_connection *conn, void *cbdata) {
   }
   cw_mutex_unlock(&r->lock);
 
-  mg_printf(conn,
-    "HTTP/1.1 %d OK\r\nContent-Length: %lu\r\nContent-Type: %s\r\n\r\n",
-    r->status,
-    (unsigned long)r->body_len,
-    r->content_type ? r->content_type : "text/plain"
-  );
+  mg_response_header_start(conn, r->status);
+  char clen_buf[64];
+  snprintf(clen_buf, sizeof(clen_buf), "%lu", (unsigned long)r->body_len);
+  mg_response_header_add(conn, "Content-Length", clen_buf, -1);
+  
+  int ct_sent = 0;
+  if (r->res_headers) {
+    for (int i = 0; i < r->num_res_headers; i++) {
+      mg_response_header_add(conn, r->res_headers[i].name, r->res_headers[i].value, -1);
+      if (strcmp(r->res_headers[i].name, "Content-Type") == 0) {
+        ct_sent = 1;
+      }
+    }
+  }
+
+  if (!ct_sent) {
+    mg_response_header_add(conn, "Content-Type", r->content_type ? r->content_type : "text/plain", -1);
+  }
+  mg_response_header_send(conn);
 
   if (r->body_len && r->body) {
     mg_write(conn, r->body, r->body_len);
