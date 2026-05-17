@@ -29,21 +29,6 @@ serve <- function(
 
   if (!is.null(static_cfg)) {
     asset_dir <- system.file("civetwebR", package = utils::packageName())
-
-    # devtools::load_all() fallback
-    if (!nzchar(asset_dir)) {
-      pkg_root <- tryCatch(
-        normalizePath(".", winslash = "/"),
-        error = function(e) NULL
-      )
-
-      candidate <- file.path(pkg_root, "inst", "civetwebR")
-
-      if (!is.null(pkg_root) && dir.exists(candidate)) {
-        asset_dir <- candidate
-      }
-    }
-
     already_mounted <- any(vapply(
       static_cfg,
       function(s) identical(s$prefix, "/civetwebR"),

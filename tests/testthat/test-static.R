@@ -145,11 +145,16 @@ test_that("integration: static end-to-end", {
 
   port <- sample(10000:20000, 1)
   base <- sprintf("http://127.0.0.1:%d", port)
-  pkg_path <- normalizePath(testthat::test_path("../.."), mustWork = TRUE)
+  pkg_path <- normalizePath(test_path("../.."), mustWork = TRUE)
 
   p <- callr::r_bg(
-    function(pkg_path, tmp, port) {
-      pkgload::load_all(pkg_path)
+    function(tmp, port, lib_paths, pkg_path) {
+      .libPaths(lib_paths)
+      if (file.exists(file.path(pkg_path, "DESCRIPTION"))) {
+        pkgload::load_all(pkg_path)
+      } else {
+        library(civetwebR)
+      }
 
       public <- file.path(tmp, "public")
       assets <- file.path(tmp, "assets")
@@ -164,7 +169,7 @@ test_that("integration: static end-to-end", {
         )
       )
     },
-    args = list(pkg_path, tmp, port)
+    args = list(tmp, port, .libPaths(), pkg_path)
   )
 
   on.exit(
@@ -174,31 +179,9 @@ test_that("integration: static end-to-end", {
     add = TRUE
   )
 
-  wait_for_server <- function(url, p) {
-    for (i in 1:40) {
-      if (!p$is_alive()) {
-        stop("Server crashed:\n", p$read_error())
-      }
-
-      ok <- tryCatch(
-        {
-          con <- url(url)
-          close(con)
-          TRUE
-        },
-        error = function(e) FALSE
-      )
-
-      if (ok) {
-        return(TRUE)
-      }
-
-      Sys.sleep(0.1)
-    }
-    stop("Server did not start")
-  }
-
-  wait_for_server(base, p)
+  # wait_for_server is defined in test-integration.R but test_bg helpers 
+  # should be robust. Re-using the reliable port-based check:
+  wait_for_server(port, p)
 
   GET <- function(path) {
     con <- url(paste0(base, path))

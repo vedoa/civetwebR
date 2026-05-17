@@ -153,11 +153,16 @@ test_that("integration: static serving works", {
 
   port <- sample(10000:20000, 1)
   base <- sprintf("http://127.0.0.1:%d", port)
-  pkg_path <- normalizePath(testthat::test_path("../.."), mustWork = TRUE)
+  pkg_path <- normalizePath(test_path("../.."), mustWork = TRUE)
 
   p <- callr::r_bg(
-    function(pkg_path, tmp, port) {
-      pkgload::load_all(pkg_path)
+    function(tmp, port, lib_paths, pkg_path) {
+      .libPaths(lib_paths)
+      if (file.exists(file.path(pkg_path, "DESCRIPTION"))) {
+        pkgload::load_all(pkg_path)
+      } else {
+        library(civetwebR)
+      }
 
       public <- file.path(tmp, "public")
       assets <- file.path(tmp, "assets")
@@ -172,7 +177,7 @@ test_that("integration: static serving works", {
         )
       )
     },
-    args = list(pkg_path, tmp, port)
+    args = list(tmp, port, .libPaths(), pkg_path)
   )
 
   on.exit(
@@ -205,11 +210,16 @@ test_that("integration: routing works", {
 
   port <- sample(10000:20000, 1)
   base <- sprintf("http://127.0.0.1:%d", port)
-  pkg_path <- normalizePath(testthat::test_path("../.."), mustWork = TRUE)
+  pkg_path <- normalizePath(test_path("../.."), mustWork = TRUE)
 
   p <- callr::r_bg(
-    function(pkg_path, port) {
-      pkgload::load_all(pkg_path)
+    function(port, lib_paths, pkg_path) {
+      .libPaths(lib_paths)
+      if (file.exists(file.path(pkg_path, "DESCRIPTION"))) {
+        pkgload::load_all(pkg_path)
+      } else {
+        library(civetwebR)
+      }
 
       handle("GET", "/hello", function(req) "HELLO")
 
@@ -223,7 +233,7 @@ test_that("integration: routing works", {
         quiet = TRUE
       )
     },
-    args = list(pkg_path, port)
+    args = list(port, .libPaths(), pkg_path)
   )
 
   on.exit(
@@ -263,11 +273,16 @@ test_that("integration: static overrides routing when overlapping", {
 
   port <- sample(10000:20000, 1)
   base <- sprintf("http://127.0.0.1:%d", port)
-  pkg_path <- normalizePath(testthat::test_path("../.."), mustWork = TRUE)
+  pkg_path <- normalizePath(test_path("../.."), mustWork = TRUE)
 
   p <- callr::r_bg(
-    function(pkg_path, tmp, port) {
-      pkgload::load_all(pkg_path)
+    function(tmp, port, lib_paths, pkg_path) {
+      .libPaths(lib_paths)
+      if (file.exists(file.path(pkg_path, "DESCRIPTION"))) {
+        pkgload::load_all(pkg_path)
+      } else {
+        library(civetwebR)
+      }
 
       handle("GET", "/api/hello", function(req) "ROUTE")
 
@@ -280,7 +295,7 @@ test_that("integration: static overrides routing when overlapping", {
         )
       )
     },
-    args = list(pkg_path, tmp, port)
+    args = list(tmp, port, .libPaths(), pkg_path)
   )
 
   on.exit(
@@ -307,11 +322,16 @@ test_that("integration: custom headers and status codes work", {
   skip_if_not_installed("pkgload")
 
   port <- sample(10000:20000, 1)
-  pkg_path <- normalizePath(testthat::test_path("../.."), mustWork = TRUE)
+  pkg_path <- normalizePath(test_path("../.."), mustWork = TRUE)
 
   p <- callr::r_bg(
-    function(pkg_path, port) {
-      pkgload::load_all(pkg_path)
+    function(port, lib_paths, pkg_path) {
+      .libPaths(lib_paths)
+      if (file.exists(file.path(pkg_path, "DESCRIPTION"))) {
+        pkgload::load_all(pkg_path)
+      } else {
+        library(civetwebR)
+      }
 
       handle("GET", "/custom", function(req) {
         list(
@@ -327,7 +347,7 @@ test_that("integration: custom headers and status codes work", {
         quiet = TRUE
       )
     },
-    args = list(pkg_path, port)
+    args = list(port, .libPaths(), pkg_path)
   )
 
   on.exit(
