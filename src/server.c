@@ -115,7 +115,12 @@ static char *dup_str(const char *s) {
   if (!s) s = "";
   size_t n = strlen(s);
   char *o = (char *)malloc(n + 1);
-  if (!o) Rf_error("OOM");
+  if (!o) {
+    // Do NOT call Rf_error here; it's called from worker threads.
+    // Log to stderr instead.
+    fprintf(stderr, "civetwebR: Out of memory in dup_str\n");
+    return NULL;
+  }
   memcpy(o, s, n + 1);
   return o;
 }
@@ -202,9 +207,14 @@ static void enqueue(cw_request_t *r) {
 
 /* Find a persistent anchor (HTTP or WS_READY) */
 static cw_request_t *find_active(int id) {
+  cw_mutex_lock(&g_lock);
   for (cw_request_t *c = active_head; c; c = c->next) {
-    if (c->id == id) return c;
+    if (c->id == id) {
+      cw_mutex_unlock(&g_lock);
+      return c;
+    }
   }
+  cw_mutex_unlock(&g_lock);
   return NULL;
 }
 
@@ -390,14 +400,16 @@ static void copy_headers(cw_request_t *r, const struct mg_request_info *req) {
   if (n > 64) n = 64; /* civetweb defines array size 64 */
 
   r->headers = (cw_hdr_t *)calloc((size_t)n, sizeof(cw_hdr_t));
-  if (!r->headers) Rf_error("OOM");
+  if (!r->headers) return;
 
   r->num_headers = n;
   for (int i = 0; i < n; i++) {
     const char *hn = req->http_headers[i].name;
     const char *hv = req->http_headers[i].value;
-    r->headers[i].name = dup_str(hn ? hn : "");
-    r->headers[i].value = dup_str(hv ? hv : "");
+    char *dn = dup_str(hn ? hn : "");
+    char *dv = dup_str(hv ? hv : "");
+    if (dn) r->headers[i].name = dn;
+    if (dv) r->headers[i].value = dv;
   }
 }
 
@@ -426,7 +438,7 @@ static void read_body(cw_request_t *r, struct mg_connection *conn, const struct 
       r->req_body_too_large = 1;
     }
     buf = (unsigned char *)malloc(cap);
-    if (!buf && cap > 0) Rf_error("OOM");
+    if (!buf && cap > 0) return;
 
     /* read exactly cl bytes (or until mg_read stops) */
     size_t remaining = (size_t)cl;
@@ -455,7 +467,7 @@ static void read_body(cw_request_t *r, struct mg_connection *conn, const struct 
     /* cl == -1 (unknown): read until peer closes or no more data */
     cap = maxb;
     buf = (unsigned char *)malloc(cap);
-    if (!buf) Rf_error("OOM");
+    if (!buf) return;
 
     for (;;) {
       unsigned char tmp[8192];
@@ -482,6 +494,24 @@ static void read_body(cw_request_t *r, struct mg_connection *conn, const struct 
   } else {
     r->req_body = buf;
     r->req_body_len = len;
+  }
+}
+
+/* Internal helpers to handle high-level vs manual header construction */
+static void send_header_line(struct mg_connection *conn, int manual, const char *k, const char *v) {
+  if (!k || !v) return;
+  if (manual) {
+    mg_printf(conn, "%s: %s\r\n", k, v);
+  } else {
+    mg_response_header_add(conn, k, v, -1);
+  }
+}
+
+static void send_header_terminator(struct mg_connection *conn, int manual) {
+  if (manual) {
+    mg_printf(conn, "\r\n");
+  } else {
+    mg_response_header_send(conn);
   }
 }
 
@@ -618,42 +648,33 @@ static int handler(struct mg_connection *conn, void *cbdata) {
   }
   cw_mutex_unlock(&r->lock);
 
-  if (r->status_text) {
-    /* Manual status line construction for custom status text */
-    mg_printf(conn, "HTTP/1.1 %d %s\r\n", r->status, r->status_text);
-    /* Note: Since we skip mg_response_header_start, we must use mg_printf for headers too
-       to keep the CivetWeb state machine consistent. */
-  } else {
-    mg_response_header_start(conn, r->status);
-  }
+  /* If status_text is provided, we must construct the response manually.
+     Otherwise, we use the CivetWeb state machine for better robustness. */
+  int manual = (r->status_text != NULL);
+  if (manual) mg_printf(conn, "HTTP/1.1 %d %s\r\n", r->status, r->status_text);
+  else mg_response_header_start(conn, r->status);
   
   if (r->body_len > 0) {
     char clen_buf[64];
     snprintf(clen_buf, sizeof(clen_buf), "%lu", (unsigned long)r->body_len);
-    if (r->status_text) mg_printf(conn, "Content-Length: %s\r\n", clen_buf);
-    else mg_response_header_add(conn, "Content-Length", clen_buf, -1);
+    send_header_line(conn, manual, "Content-Length", clen_buf);
   }
 
   int ct_sent = 0;
   if (r->res_headers) {
     for (int i = 0; i < r->num_res_headers; i++) {
-      if (r->status_text) mg_printf(conn, "%s: %s\r\n", r->res_headers[i].name, r->res_headers[i].value);
-      else mg_response_header_add(conn, r->res_headers[i].name, r->res_headers[i].value, -1);
-
-      if (strcmp(r->res_headers[i].name, "Content-Type") == 0) {
+      send_header_line(conn, manual, r->res_headers[i].name, r->res_headers[i].value);
+      if (mg_strcasecmp(r->res_headers[i].name, "Content-Type") == 0) {
         ct_sent = 1;
       }
     }
   }
 
   if (!ct_sent) {
-    const char *ct = r->content_type ? r->content_type : "text/plain";
-    if (r->status_text) mg_printf(conn, "Content-Type: %s\r\n", ct);
-    else mg_response_header_add(conn, "Content-Type", ct, -1);
+    send_header_line(conn, manual, "Content-Type", r->content_type ? r->content_type : "text/plain");
   }
   
-  if (r->status_text) mg_printf(conn, "\r\n");
-  else mg_response_header_send(conn);
+  send_header_terminator(conn, manual);
 
   if (r->body_len && r->body) {
     mg_write(conn, r->body, r->body_len);
@@ -879,46 +900,64 @@ SEXP civetweb_stop_server(SEXP xptr) {
   cw_mutex_lock(&g_lock);
   g_running = 0;
 
-  /* wake next_request waiters */
+  /* Wake up any R threads waiting in civetweb_next_request_timeout */
   cw_cond_broadcast(&q_cv);
 
-  /* wake any request handlers waiting for a response */
-  for (cw_request_t *r = q_head; r; r = r->next) {
-    cw_mutex_lock(&r->lock);
-    if (!r->responded) {
-      r->status = 503;
-      free(r->content_type);
-      r->content_type = dup_str("text/plain");
-      free(r->body);
-      r->body = (unsigned char *)dup_str("Service Unavailable");
-      r->body_len = strlen((const char *)r->body);
-      r->responded = 1;
-      cw_cond_signal(&r->cv);
+  // Signal any HTTP worker threads that are waiting for a response from R.
+  // These threads will then clean up their cw_request_t objects.
+  cw_request_t *current_active = active_head;
+  while (current_active) {
+    if (current_active->event_type == CW_EVENT_HTTP) {
+      cw_mutex_lock(&current_active->lock);
+      if (!current_active->responded) {
+        current_active->status = 503;
+        free(current_active->content_type);
+        current_active->content_type = dup_str("text/plain");
+        free(current_active->body);
+        current_active->body = (unsigned char *)dup_str("Service Unavailable");
+        current_active->body_len = strlen((const char *)current_active->body);
+        current_active->responded = 1;
+        cw_cond_signal(&current_active->cv);
+      }
+      cw_mutex_unlock(&current_active->lock);
     }
-    cw_mutex_unlock(&r->lock);
+    current_active = current_active->next; // Iterate without modifying list yet
   }
+  // At this point, HTTP worker threads are unblocked and will eventually free their requests.
 
-  for (cw_request_t *r = active_head; r; r = r->next) {
-    if (r->event_type == CW_EVENT_HTTP) cw_mutex_lock(&r->lock);
-    if (!r->responded) {
-      r->status = 503;
-      free(r->content_type);
-      r->content_type = dup_str("text/plain");
-      free(r->body);
-      r->body = (unsigned char *)dup_str("Service Unavailable");
-      r->body_len = strlen((const char *)r->body);
-      r->responded = 1;
-      cw_cond_signal(&r->cv);
-    }
-    if (r->event_type == CW_EVENT_HTTP) cw_mutex_unlock(&r->lock);
-  }
-
-  cw_mutex_unlock(&g_lock);
+  cw_mutex_unlock(&g_lock); // Release global lock before calling mg_stop
 
   if (ctx) {
     R_SetExternalPtrAddr(xptr, NULL);
     mg_stop(ctx);
   }
+
+  // After mg_stop, all CivetWeb threads are gone.
+  // Now, clean up any remaining cw_request_t objects that were not self-cleaning.
+  // These are primarily WS_READY objects in active_head and any requests
+  // still in q_head that were never dequeued by R.
+
+  cw_mutex_lock(&g_lock); // Re-acquire global lock for final cleanup
+
+  // Free any remaining requests in the queue (q_head)
+  cw_request_t *current_q = q_head;
+  q_head = NULL;
+  q_tail = NULL;
+  while (current_q) {
+    cw_request_t *next_q = current_q->next;
+    free_req(current_q);
+    current_q = next_q;
+  }
+
+  // Free any remaining WS_READY requests in active_head.
+  // HTTP requests should have been removed by their worker threads.
+  while (active_head) {
+    current_active = active_head;
+    active_head = current_active->next;
+    free_req(current_active);
+  }
+
+  cw_mutex_unlock(&g_lock);
 
   return R_NilValue;
 }
