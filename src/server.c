@@ -6,6 +6,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <time.h>
+#ifndef _WIN32
+  #include <sched.h>
+  #include <unistd.h>
+#endif
 
 #include "civetweb.h"
 
@@ -41,7 +46,7 @@
   #define cw_cond_wait(c,m)   pthread_cond_wait((c),(m))
 #endif
 
-/* ---- limits ---- */
+/* --- Internal Constants --- */
 static size_t g_max_body_size = 8u * 1024u * 1024u; /* Default 8 MiB */
 
 typedef enum {
@@ -52,7 +57,7 @@ typedef enum {
   CW_EVENT_WS_CLOSE = 4
 } cw_event_t;
 
-/* request header pair */
+/* --- Data Structures --- */
 typedef struct cw_hdr {
   char *name;
   char *value;
@@ -83,15 +88,14 @@ typedef struct cw_request {
   unsigned char *body;
   size_t body_len;
 
+  /* Synchronization */
   int responded;
-
   cw_mutex_t lock;
   cw_cond_t  cv;
-
   struct cw_request *next;
 } cw_request_t;
 
-/* GLOBAL STATE */
+/* --- Global State --- */
 static cw_request_t *q_head = NULL, *q_tail = NULL;
 static cw_request_t *active_head = NULL;
 
@@ -115,12 +119,7 @@ static char *dup_str(const char *s) {
   if (!s) s = "";
   size_t n = strlen(s);
   char *o = (char *)malloc(n + 1);
-  if (!o) {
-    // Do NOT call Rf_error here; it's called from worker threads.
-    // Log to stderr instead.
-    fprintf(stderr, "civetwebR: Out of memory in dup_str\n");
-    return NULL;
-  }
+  if (!o) Rf_error("OOM");
   memcpy(o, s, n + 1);
   return o;
 }
@@ -207,15 +206,31 @@ static void enqueue(cw_request_t *r) {
 
 /* Find a persistent anchor (HTTP or WS_READY) */
 static cw_request_t *find_active(int id) {
-  cw_mutex_lock(&g_lock);
   for (cw_request_t *c = active_head; c; c = c->next) {
-    if (c->id == id) {
-      cw_mutex_unlock(&g_lock);
-      return c;
-    }
+    if (c->id == id) return c;
   }
-  cw_mutex_unlock(&g_lock);
   return NULL;
+}
+
+static void remove_active(cw_request_t *r) {
+  cw_request_t **pp = &active_head;
+  while (*pp) {
+    if (*pp == r) {
+      *pp = r->next;
+      break;
+    }
+    pp = &((*pp)->next);
+  }
+}
+
+static void send_header_line(struct mg_connection *conn, int manual, const char *k, const char *v) {
+  if (manual) mg_printf(conn, "%s: %s\r\n", k, v);
+  else mg_response_header_add(conn, k, v, -1);
+}
+
+static void send_header_terminator(struct mg_connection *conn, int manual) {
+  if (manual) mg_printf(conn, "\r\n");
+  else mg_response_header_send(conn);
 }
 
 /* dequeue with timeout
@@ -233,6 +248,10 @@ static int dequeue_timeout(cw_request_t **out, int timeout_ms) {
 
   while (q_head == NULL && g_running) {
     cw_mutex_unlock(&g_lock);
+
+#ifndef _WIN32
+    sched_yield(); /* Crucial for R integration on Unix */
+#endif
 
     if (interrupt_pending()) {
       *out = NULL;
@@ -273,18 +292,8 @@ static int dequeue_timeout(cw_request_t **out, int timeout_ms) {
   return 1;
 }
 
-static void remove_active(cw_request_t *r) {
-  cw_request_t **pp = &active_head;
-  while (*pp) {
-    if (*pp == r) {
-      *pp = r->next;
-      return;
-    }
-    pp = &(*pp)->next;
-  }
-}
+/* --- R Response Application --- */
 
-/* response parser */
 static void apply_response_from_R(cw_request_t *r, SEXP res) {
   r->status = 200;
 
@@ -344,8 +353,9 @@ static void apply_response_from_R(cw_request_t *r, SEXP res) {
         r->body = (unsigned char *)dup_str(s);
         r->body_len = strlen(s);
       } else if (TYPEOF(b) == RAWSXP) {
-        r->body_len = (size_t)XLENGTH(b);
-        if (r->body_len > 0) {
+        size_t blen = (size_t)XLENGTH(b);
+        r->body_len = blen;
+        if (blen > 0) {
           r->body = (unsigned char *)malloc(r->body_len);
           if (!r->body) {
             r->status = 500;
@@ -388,7 +398,8 @@ static void apply_response_from_R(cw_request_t *r, SEXP res) {
   }
 }
 
-/* copy headers from mg_request_info */
+/* --- Request Parsing --- */
+
 static void copy_headers(cw_request_t *r, const struct mg_request_info *req) {
   r->headers = NULL;
   r->num_headers = 0;
@@ -406,116 +417,50 @@ static void copy_headers(cw_request_t *r, const struct mg_request_info *req) {
   for (int i = 0; i < n; i++) {
     const char *hn = req->http_headers[i].name;
     const char *hv = req->http_headers[i].value;
-    char *dn = dup_str(hn ? hn : "");
-    char *dv = dup_str(hv ? hv : "");
-    if (dn) r->headers[i].name = dn;
-    if (dv) r->headers[i].value = dv;
+    r->headers[i].name = dup_str(hn ? hn : "");
+    r->headers[i].value = dup_str(hv ? hv : "");
   }
 }
 
-/* read request body via mg_read (binary) */
 static void read_body(cw_request_t *r, struct mg_connection *conn, const struct mg_request_info *req) {
   r->req_body = NULL;
   r->req_body_len = 0;
   r->req_body_too_large = 0;
 
-  if (!conn || !req) return;
+  if (!conn || !req || req->content_length == 0) return;
 
-  long long cl = req->content_length; /* can be -1 */
-  if (cl == 0) return;
+  long long clen = req->content_length;
+  size_t limit = g_max_body_size;
 
-  /* allocate up to max body, read & discard rest if larger */
-  size_t maxb = g_max_body_size;
-
-  unsigned char *buf = NULL;
-  size_t cap = 0;
-  size_t len = 0;
-
-  if (cl > 0) {
-    cap = (size_t)cl;
-    if (cap > maxb) {
-      cap = maxb;
-      r->req_body_too_large = 1;
-    }
-    buf = (unsigned char *)malloc(cap);
-    if (!buf && cap > 0) return;
-
-    /* read exactly cl bytes (or until mg_read stops) */
-    size_t remaining = (size_t)cl;
-    while (remaining > 0) {
-      unsigned char tmp[8192];
-      size_t want = remaining > sizeof(tmp) ? sizeof(tmp) : remaining;
-
-      int nread = mg_read(conn, tmp, want);
-      if (nread <= 0) break;
-
-      /* store up to cap, discard rest */
-      size_t take = (size_t)nread;
-      if (len < cap) {
-        size_t room = cap - len;
-        size_t put = take > room ? room : take;
-        memcpy(buf + len, tmp, put);
-        len += put;
-      } else {
-        r->req_body_too_large = 1;
-      }
-
-      remaining -= take;
-    }
-
-  } else {
-    /* cl == -1 (unknown): read until peer closes or no more data */
-    cap = maxb;
-    buf = (unsigned char *)malloc(cap);
-    if (!buf) return;
-
-    for (;;) {
-      unsigned char tmp[8192];
-      int nread = mg_read(conn, tmp, sizeof(tmp));
-      if (nread <= 0) break;
-
-      size_t take = (size_t)nread;
-      if (len < cap) {
-        size_t room = cap - len;
-        size_t put = take > room ? room : take;
-        memcpy(buf + len, tmp, put);
-        len += put;
-        if (put < take) r->req_body_too_large = 1;
-      } else {
-        r->req_body_too_large = 1;
-      }
-    }
+  if (clen > 0 && (size_t)clen > limit) {
+    r->req_body_too_large = 1;
   }
 
-  if (len == 0) {
-    free(buf);
-    r->req_body = NULL;
-    r->req_body_len = 0;
-  } else {
-    r->req_body = buf;
-    r->req_body_len = len;
+  size_t cap = (clen > 0 && (size_t)clen <= limit) ? (size_t)clen : limit;
+  r->req_body = (unsigned char *)malloc(cap);
+  if (!r->req_body) return;
+
+  size_t total_read = 0;
+  unsigned char chunk[8192];
+  int n;
+
+  while ((n = mg_read(conn, chunk, sizeof(chunk))) > 0) {
+    size_t space = (total_read < cap) ? (cap - total_read) : 0;
+    size_t to_copy = ((size_t)n < space) ? (size_t)n : space;
+
+    if (to_copy > 0) {
+      memcpy(r->req_body + total_read, chunk, to_copy);
+      total_read += to_copy;
+    }
+    if ((size_t)n > to_copy) r->req_body_too_large = 1;
   }
+
+  r->req_body_len = total_read;
+  if (total_read == 0) { free(r->req_body); r->req_body = NULL; }
 }
 
-/* Internal helpers to handle high-level vs manual header construction */
-static void send_header_line(struct mg_connection *conn, int manual, const char *k, const char *v) {
-  if (!k || !v) return;
-  if (manual) {
-    mg_printf(conn, "%s: %s\r\n", k, v);
-  } else {
-    mg_response_header_add(conn, k, v, -1);
-  }
-}
+/* --- WebSocket Handlers --- */
 
-static void send_header_terminator(struct mg_connection *conn, int manual) {
-  if (manual) {
-    mg_printf(conn, "\r\n");
-  } else {
-    mg_response_header_send(conn);
-  }
-}
-
-/* WebSocket Handlers (NO R API) */
 static int ws_connect_handler(const struct mg_connection *conn, void *cbdata) {
   return 0; // Accept all
 }
@@ -593,12 +538,22 @@ static void ws_close_handler(const struct mg_connection *conn, void *cbdata) {
   mg_set_user_connection_data((struct mg_connection *)conn, NULL);
 }
 
-/* HTTP handler (NO R API) */
+/* --- HTTP Request Handler --- */
+
 static int handler(struct mg_connection *conn, void *cbdata) {
   (void)cbdata;
   init_once();
 
   const struct mg_request_info *req = mg_get_request_info(conn);
+
+  /* Respond immediately to port probes to prevent worker pool exhaustion */
+  if (!req || !req->request_method || req->request_method[0] == '\0' ||
+      (!strcmp(req->request_method, "HEAD") && req->request_uri && !strcmp(req->request_uri, "/"))) {
+    mg_printf(conn, "HTTP/1.1 200 OK\r\n"
+                    "Connection: close\r\n"
+                    "Content-Length: 0\r\n\r\n");
+    return 1;
+  }
 
   cw_request_t *r = (cw_request_t *)calloc(1, sizeof(*r));
   if (!r) {
@@ -648,32 +603,25 @@ static int handler(struct mg_connection *conn, void *cbdata) {
   }
   cw_mutex_unlock(&r->lock);
 
-  /* If status_text is provided, we must construct the response manually.
-     Otherwise, we use the CivetWeb state machine for better robustness. */
   int manual = (r->status_text != NULL);
-  if (manual) mg_printf(conn, "HTTP/1.1 %d %s\r\n", r->status, r->status_text);
-  else mg_response_header_start(conn, r->status);
-  
-  if (r->body_len > 0) {
-    char clen_buf[64];
-    snprintf(clen_buf, sizeof(clen_buf), "%lu", (unsigned long)r->body_len);
-    send_header_line(conn, manual, "Content-Length", clen_buf);
+  if (manual) {
+    mg_printf(conn, "HTTP/1.1 %d %s\r\n", r->status, r->status_text);
+    mg_disable_connection_keep_alive(conn);
+  } else {
+    mg_response_header_start(conn, r->status);
   }
-
+  
   int ct_sent = 0;
   if (r->res_headers) {
     for (int i = 0; i < r->num_res_headers; i++) {
-      send_header_line(conn, manual, r->res_headers[i].name, r->res_headers[i].value);
-      if (mg_strcasecmp(r->res_headers[i].name, "Content-Type") == 0) {
-        ct_sent = 1;
-      }
+      if (r->res_headers[i].name) send_header_line(conn, manual, r->res_headers[i].name, r->res_headers[i].value);
+      if (r->res_headers[i].name && !mg_strcasecmp(r->res_headers[i].name, "Content-Type")) ct_sent = 1;
     }
   }
+  if (!ct_sent) send_header_line(conn, manual, "Content-Type", r->content_type);
 
-  if (!ct_sent) {
-    send_header_line(conn, manual, "Content-Type", r->content_type ? r->content_type : "text/plain");
-  }
-  
+  char clen[64]; snprintf(clen, sizeof(clen), "%zu", r->body_len);
+  send_header_line(conn, manual, "Content-Length", clen);
   send_header_terminator(conn, manual);
 
   if (r->body_len && r->body) {
@@ -688,7 +636,7 @@ static int handler(struct mg_connection *conn, void *cbdata) {
   return 1;
 }
 
-/* R API */
+/* --- R API Entry Points --- */
 
 static SEXP make_interrupt_sentinel(void) {
   SEXP out = PROTECT(Rf_allocVector(VECSXP, 1));
@@ -827,7 +775,7 @@ SEXP civetweb_send_response(SEXP idS, SEXP res) {
   return R_NilValue;
 }
 
-/* SERVER */
+/* --- Server Lifecycle --- */
 
 SEXP civetweb_start_server(SEXP portS, SEXP hostS, SEXP threadsS, SEXP max_bodyS, SEXP timeoutS) {
   init_once();
@@ -867,6 +815,7 @@ SEXP civetweb_start_server(SEXP portS, SEXP hostS, SEXP threadsS, SEXP max_bodyS
     "listening_ports", addr,
     "num_threads", threads_buf,
     "request_timeout_ms", timeout_buf,
+    "linger_timeout_ms", "0",
     NULL
   };
 
@@ -882,8 +831,14 @@ SEXP civetweb_start_server(SEXP portS, SEXP hostS, SEXP threadsS, SEXP max_bodyS
     Rf_error("start failed");
   }
 
-  mg_set_request_handler(ctx, "/", handler, NULL);
+  mg_set_request_handler(ctx, "**", handler, NULL);
   mg_set_websocket_handler(ctx, "/ws", ws_connect_handler, ws_ready_handler, ws_data_handler, ws_close_handler, NULL);
+
+#ifdef _WIN32
+  Sleep(20);
+#else
+  usleep(50000);
+#endif
 
   return R_MakeExternalPtr(ctx, R_NilValue, R_NilValue);
 }
@@ -900,64 +855,52 @@ SEXP civetweb_stop_server(SEXP xptr) {
   cw_mutex_lock(&g_lock);
   g_running = 0;
 
-  /* Wake up any R threads waiting in civetweb_next_request_timeout */
+  /* wake next_request waiters */
   cw_cond_broadcast(&q_cv);
 
-  // Signal any HTTP worker threads that are waiting for a response from R.
-  // These threads will then clean up their cw_request_t objects.
-  cw_request_t *current_active = active_head;
-  while (current_active) {
-    if (current_active->event_type == CW_EVENT_HTTP) {
-      cw_mutex_lock(&current_active->lock);
-      if (!current_active->responded) {
-        current_active->status = 503;
-        free(current_active->content_type);
-        current_active->content_type = dup_str("text/plain");
-        free(current_active->body);
-        current_active->body = (unsigned char *)dup_str("Service Unavailable");
-        current_active->body_len = strlen((const char *)current_active->body);
-        current_active->responded = 1;
-        cw_cond_signal(&current_active->cv);
-      }
-      cw_mutex_unlock(&current_active->lock);
+  /* wake any request handlers waiting for a response */
+  for (cw_request_t *r = q_head; r; r = r->next) {
+    cw_mutex_lock(&r->lock);
+    if (!r->responded) {
+      r->status = 503;
+      free(r->content_type);
+      r->content_type = dup_str("text/plain");
+      free(r->body);
+      r->body = (unsigned char *)dup_str("Service Unavailable");
+      r->body_len = strlen((const char *)r->body);
+      r->responded = 1;
+      cw_cond_signal(&r->cv);
     }
-    current_active = current_active->next; // Iterate without modifying list yet
+    cw_mutex_unlock(&r->lock);
   }
-  // At this point, HTTP worker threads are unblocked and will eventually free their requests.
 
-  cw_mutex_unlock(&g_lock); // Release global lock before calling mg_stop
+  for (cw_request_t *r = active_head; r; r = r->next) {
+    if (r->event_type == CW_EVENT_HTTP) cw_mutex_lock(&r->lock);
+    if (!r->responded) {
+      r->status = 503;
+      free(r->content_type);
+      r->content_type = dup_str("text/plain");
+      free(r->body);
+      r->body = (unsigned char *)dup_str("Service Unavailable");
+      r->body_len = strlen((const char *)r->body);
+      r->responded = 1;
+      cw_cond_signal(&r->cv);
+    }
+    if (r->event_type == CW_EVENT_HTTP) cw_mutex_unlock(&r->lock);
+  }
+
+  cw_mutex_unlock(&g_lock);
 
   if (ctx) {
     R_SetExternalPtrAddr(xptr, NULL);
     mg_stop(ctx);
+
+#ifdef _WIN32
+    Sleep(20);
+#else
+    usleep(50000);
+#endif
   }
-
-  // After mg_stop, all CivetWeb threads are gone.
-  // Now, clean up any remaining cw_request_t objects that were not self-cleaning.
-  // These are primarily WS_READY objects in active_head and any requests
-  // still in q_head that were never dequeued by R.
-
-  cw_mutex_lock(&g_lock); // Re-acquire global lock for final cleanup
-
-  // Free any remaining requests in the queue (q_head)
-  cw_request_t *current_q = q_head;
-  q_head = NULL;
-  q_tail = NULL;
-  while (current_q) {
-    cw_request_t *next_q = current_q->next;
-    free_req(current_q);
-    current_q = next_q;
-  }
-
-  // Free any remaining WS_READY requests in active_head.
-  // HTTP requests should have been removed by their worker threads.
-  while (active_head) {
-    current_active = active_head;
-    active_head = current_active->next;
-    free_req(current_active);
-  }
-
-  cw_mutex_unlock(&g_lock);
 
   return R_NilValue;
 }
