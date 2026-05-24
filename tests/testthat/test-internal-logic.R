@@ -1,3 +1,7 @@
+# ------------------------------------------------------------------------------
+# Internal Helper Logic
+# ------------------------------------------------------------------------------
+
 test_that("path normalization logic is robust", {
   expect_error(.normalize_path("a/b"))
   expect_equal(.normalize_path("/a/b?q=1"), "/a/b?q=1")

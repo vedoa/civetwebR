@@ -1,3 +1,7 @@
+# ------------------------------------------------------------------------------
+# High-level Serve API
+# ------------------------------------------------------------------------------
+
 test_that("serve validation works", {
   expect_error(serve(port = NA), "port")
   expect_error(serve(port = 99999), "port")

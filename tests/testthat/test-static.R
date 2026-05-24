@@ -1,3 +1,7 @@
+# ------------------------------------------------------------------------------
+# Unit Tests
+# ------------------------------------------------------------------------------
+
 test_that("static: single mount works", {
   tmp <- tempdir()
 
@@ -125,6 +129,10 @@ test_that("static: index fallback works", {
   expect_equal(res$status, 200L)
   expect_match(rawToChar(res$body), "alt index")
 })
+
+# ------------------------------------------------------------------------------
+# Integration Tests
+# ------------------------------------------------------------------------------
 
 test_that("integration: static end-to-end", {
   skip_on_cran()

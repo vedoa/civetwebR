@@ -1,3 +1,7 @@
+# ------------------------------------------------------------------------------
+# Server Loops
+# ------------------------------------------------------------------------------
+
 test_that("run_server throws error when server not started", {
   # Ensure server is stopped
   if (.is_running()) {

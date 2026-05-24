@@ -27,10 +27,11 @@ group <- function(prefix, expr) {
 #' @param method Character string. HTTP method (e.g. "GET", "POST").
 #' @param path Character string. Route path starting with "/".
 #' @param fun Function. Handler of form function(req).
+#' @param overwrite Logical. If TRUE (default), overwrite existing handler.
 #'
 #' @return TRUE (invisibly) on success.
 #' @export
-handle <- function(method, path, fun) {
+handle <- function(method, path, fun, overwrite = TRUE) {
   if (!is.character(method) || length(method) != 1L || is.na(method)) {
     stop("method must be character(1)", call. = FALSE)
   }
@@ -49,7 +50,7 @@ handle <- function(method, path, fun) {
     list()
   }
 
-  if (!is.null(entry[[method]])) {
+  if (!overwrite && !is.null(entry[[method]])) {
     stop("handler exists", call. = FALSE)
   }
 
@@ -58,6 +59,34 @@ handle <- function(method, path, fun) {
 
   invisible(TRUE)
 }
+
+#' Unregister an HTTP handler
+#'
+#' Removes a function for a given HTTP method and path.
+#'
+#' @param method Character string. HTTP method (e.g. "GET").
+#' @param path Character string. Route path.
+#' @return TRUE (invisibly) on success.
+#' @export
+unhandle <- function(method, path) {
+  if (!is.character(method) || length(method) != 1L || is.na(method)) {
+    stop("method must be character(1)", call. = FALSE)
+  }
+  method <- toupper(method)
+  path <- paste0(.current_prefix(), .normalize_path(path))
+  env <- .get_handlers_env()
+  if (exists(path, envir = env, inherits = FALSE)) {
+    entry <- get(path, envir = env, inherits = FALSE)
+    entry[[method]] <- NULL
+    if (length(entry) == 0L) {
+      rm(list = path, envir = env)
+    } else {
+      assign(path, entry, envir = env)
+    }
+  }
+  invisible(TRUE)
+}
+
 
 #' Dispatch an HTTP request
 #'

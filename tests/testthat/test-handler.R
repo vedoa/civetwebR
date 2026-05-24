@@ -1,3 +1,7 @@
+# ------------------------------------------------------------------------------
+# Registration
+# ------------------------------------------------------------------------------
+
 test_that("handler registers for method + path", {
   clear_handlers()
 
@@ -14,7 +18,7 @@ test_that("duplicate handler errors", {
 
   handle("GET", "/a", function(req) "ok")
 
-  expect_error(handle("GET", "/a", function(req) "again"))
+  expect_error(handle("GET", "/a", function(req) "again", overwrite = FALSE))
 })
 
 
@@ -102,6 +106,10 @@ test_that("group applies prefix correctly", {
   expect_true(is.function(.get_handler("GET", "/api/x")))
 })
 
+# ------------------------------------------------------------------------------
+# Query Parsing
+# ------------------------------------------------------------------------------
+
 test_that("parse_query handles basic cases", {
   expect_equal(.parse_query("a=1"), list(a = "1"))
 
@@ -120,6 +128,10 @@ test_that("parse_query handles basic cases", {
     list(name = "tom lee")
   )
 })
+
+# ------------------------------------------------------------------------------
+# Request Context
+# ------------------------------------------------------------------------------
 
 test_that("query_params available in handler", {
   clear_handlers()
@@ -177,4 +189,51 @@ test_that("query_params + headers + body all present", {
   res <- .dispatch_request("POST", "/all", req = req)
 
   expect_equal(res$body, "1|t|z")
+})
+
+# ------------------------------------------------------------------------------
+# Management (Overwrite / Unhandle)
+# ------------------------------------------------------------------------------
+
+test_that("handle registers and overwrites", {
+  clear_handlers()
+  
+  h1 <- function(req) "h1"
+  h2 <- function(req) "h2"
+  
+  handle("GET", "/test", h1)
+  expect_identical(.get_handler("GET", "/test"), h1)
+  
+  # Default is overwrite = TRUE
+  handle("GET", "/test", h2)
+  expect_identical(.get_handler("GET", "/test"), h2)
+  
+  # overwrite = FALSE should error
+  expect_error(handle("GET", "/test", h1, overwrite = FALSE), "handler exists")
+  
+  # case insensitive method
+  handle("post", "/test", h1)
+  expect_identical(.get_handler("POST", "/test"), h1)
+})
+
+test_that("unhandle removes specific method or entire path", {
+  clear_handlers()
+  
+  h1 <- function(req) "h1"
+  
+  handle("GET", "/test", h1)
+  handle("POST", "/test", h1)
+  
+  expect_identical(.get_handler("GET", "/test"), h1)
+  expect_identical(.get_handler("POST", "/test"), h1)
+  
+  unhandle("GET", "/test")
+  expect_null(.get_handler("GET", "/test"))
+  expect_identical(.get_handler("POST", "/test"), h1)
+  
+  unhandle("POST", "/test")
+  expect_null(.get_handler("POST", "/test"))
+  
+  # Check that environment entry is removed when empty
+  expect_false(exists("/test", envir = .get_handlers_env(), inherits = FALSE))
 })

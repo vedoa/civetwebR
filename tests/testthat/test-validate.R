@@ -1,3 +1,7 @@
+# ------------------------------------------------------------------------------
+# Input Validation
+# ------------------------------------------------------------------------------
+
 test_that("port validation works", {
   expect_equal(.validate_port(8080), 8080L)
   expect_error(.validate_port(-1))

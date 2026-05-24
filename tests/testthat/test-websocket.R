@@ -1,3 +1,7 @@
+# ------------------------------------------------------------------------------
+# WebSocket Integration
+# ------------------------------------------------------------------------------
+
 test_that("integration: websocket handshake and echo work", {
   skip_on_cran()
   skip_if_not_installed("callr")

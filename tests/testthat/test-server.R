@@ -1,3 +1,7 @@
+# ------------------------------------------------------------------------------
+# Server Control (Start/Stop)
+# ------------------------------------------------------------------------------
+
 test_that("server starts and updates state", {
   if (!is.null(.state$server_xptr)) {
     stop_server()
